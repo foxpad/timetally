@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tg-theme-accent-text-color: #8774e1;
+  --tg-theme-bg-color: #212121;
+  --tg-theme-button-color: #8774e1;
+  --tg-theme-button-text-color: #ffffff;
+  --tg-theme-destructive-text-color: #ff595a;
+  --tg-theme-header-bg-color: #212121;
+  --tg-theme-hint-color: #aaaaaa;
+  --tg-theme-link-color: #8774e1;
+  --tg-theme-secondary-bg-color: #181818;
+  --tg-theme-section-bg-color: #212121;
+  --tg-theme-section-header-text-color: #8774e1;
+  --tg-theme-subtitle-text-color: #aaaaaa;
+  --tg-theme-text-color: #ffffff;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.focus-input:focus {
+  outline: 2px solid var(--tg-theme-hint-color);
+}
+
+.tooltip {
+  white-space: normal !important;
+  max-width: 200px !important;
+  word-wrap: break-word !important;
+}
+
+.before-time-address::before {
+  content: '\2022';
+  padding: 0 7px;
+}

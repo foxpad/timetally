@@ -1,0 +1,341 @@
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Union
+import asyncpg
+
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from aiogram.utils.web_app import safe_parse_webapp_init_data
+
+import uvicorn
+import os
+from typing import Optional, List
+from datetime import datetime, date, time
+import asyncio
+import json
+
+from pydantic import ValidationError
+
+from models import WebAppUser, EventCreate, EventResponse, EventUpdate, EventUpdateResponse, ErrorResponse, ErrorDetail
+from db import create_or_update_user, create_event, get_active_user_events, get_archived_user_events, \
+    get_event_details_db, delete_event_db, update_event_data, validate_event_update_permissions, submit_votes_db, \
+    finalized_event_db, unfinalize_event_db, get_event_by_public_id
+
+from db import Database
+from bot import telegram_bot, verify_webapp_init_data, BOT_TOKEN, WEBHOOK_SECRET, WEBHOOK_PATH
+from config import WEBHOOK_URL
+
+db = Database()
+
+
+async def get_db():
+    """Генератор соединений для FastAPI Depends"""
+    async with (await db.get_connection()) as connection:
+        yield connection
+
+
+async def verify_telegram_webapp(request: Request):
+    auth_string = request.headers.get("Authorization")
+    if not auth_string:
+        raise HTTPException(401, detail="Authorization header missing")
+
+    verified_data = verify_webapp_init_data(
+        init_data=auth_string,
+        bot_token=telegram_bot.bot.token
+    )
+
+    if not verified_data:
+        raise HTTPException(401, detail="Invalid Telegram auth data")
+
+    return verified_data
+
+
+async def get_user_from_telegram_data(parsed_data) -> WebAppUser:
+    if not parsed_data.user.is_premium:
+        is_premium = False
+    else:
+        is_premium = True
+    user = WebAppUser(
+        telegram_user_id=parsed_data.user.id,
+        username=parsed_data.user.username,
+        first_name=parsed_data.user.first_name,
+        last_name=parsed_data.user.last_name,
+        language_code=parsed_data.user.language_code,
+        is_premium=is_premium,
+        allows_write_to_pm=parsed_data.user.allows_write_to_pm,
+        photo_url=parsed_data.user.photo_url
+    )
+    return user
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    await db.connect()
+
+    webhook_url = WEBHOOK_URL
+    if webhook_url:
+        await telegram_bot.set_webhook(f"{webhook_url}{WEBHOOK_PATH}")
+
+    yield
+
+    await db.close()
+    await telegram_bot.delete_webhook()
+
+
+app = FastAPI(lifespan=app_lifespan)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+async def root():
+    if db.pool is None:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
+    async with db.pool.acquire() as connection:
+        return JSONResponse(content={"message": "Meety API by Comunna is running"})
+
+
+# Telegram webhook endpoint
+@app.post(WEBHOOK_PATH)
+async def webhook(request: Request):
+    secret_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if secret_token != WEBHOOK_SECRET:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Invalid secret token"}
+        )
+
+    # Process update
+    update_data = await request.json()
+    try:
+        await telegram_bot.process_update(update_data)
+        return JSONResponse(content={"ok": True})
+    except Exception as ex:
+        print(f'Error processing update: {ex}')
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+# Bot management endpoints
+@app.get("/bot/webhook-info")
+async def get_webhook_info():
+    info = await telegram_bot.get_webhook_info()
+    return JSONResponse(content=info)
+
+
+@app.post("/bot/set-webhook")
+async def set_webhook(webhook_url: str):
+    await telegram_bot.set_webhook(webhook_url)
+    return JSONResponse(content={"message": "Webhook set successfully"})
+
+
+@app.delete("/bot/webhook")
+async def delete_webhook():
+    await telegram_bot.delete_webhook()
+    return JSONResponse(content={"message": "Webhook deleted successfully"})
+
+
+@app.post("/api/validate")
+async def validate_telegram_user(request: Request, conn=Depends(get_db), telegram_data=Depends(verify_telegram_webapp)):
+    webapp_user = await get_user_from_telegram_data(telegram_data)
+    return await create_or_update_user(conn, webapp_user)
+
+
+@app.post("/api/events/create")
+async def create_new_event(request: Request, conn: asyncpg.Connection = Depends(get_db),
+                           telegram_data=Depends(verify_telegram_webapp)):
+    raw_body = await request.body()
+    try:
+        data = json.loads(raw_body)
+        event_data = EventCreate(**data)
+        event = await create_event(conn, event_data, telegram_data.user.id)
+        return {"status": "success", "ok": True, "event": event.model_dump()}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Invalid JSON format")
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+
+@app.get("/api/events/active")
+async def get_active_events(request: Request, conn: asyncpg.Connection = Depends(get_db),
+                            telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    try:
+        events = await get_active_user_events(conn, user_id)
+        return [dict(event) for event in events]
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Invalid JSON format")
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+
+@app.get("/api/events/archived")
+async def get_archived_events(request: Request, conn: asyncpg.Connection = Depends(get_db),
+                              telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    try:
+        events = await get_archived_user_events(conn, user_id)
+        return [dict(event) for event in events]
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Invalid JSON format")
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+
+@app.get("/api/events/{event_id}")
+async def get_event_details(event_id: int, conn: asyncpg.Connection = Depends(get_db),
+                            telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    event_details = await get_event_details_db(conn, user_id, event_id)
+    return event_details
+
+
+@app.get("/api/events/public/{event_public_id}")
+async def get_event_details(event_public_id: str, conn: asyncpg.Connection = Depends(get_db),
+                            telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    event_details = await get_event_by_public_id(conn, user_id, event_public_id)
+    return event_details
+
+
+@app.post("/api/events/{event_id}/delete")
+async def delete_event(event_id: int, conn: asyncpg.Connection = Depends(get_db),
+                       telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    return await delete_event_db(conn, user_id, event_id)
+
+
+@app.put("/api/events/{event_id}", response_model=Union[EventUpdateResponse, ErrorResponse])
+async def update_event(event_id: int, request: Request, conn: asyncpg.Connection = Depends(get_db),
+                       telegram_data=Depends(verify_telegram_webapp)):
+    try:
+        raw_body = await request.body()
+        data = json.loads(raw_body)
+        event_update = EventUpdate(**data)
+
+        if event_update.event.id != event_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Event ID in URL doesn't match ID in request body"
+            )
+
+        # 4. Валидируем права доступа и бизнес-логику
+        validation_result = await validate_event_update_permissions(conn, event_update, telegram_data.user.id)
+
+        if not validation_result["valid"]:
+            error_detail = validation_result.get("error", "Validation failed")
+
+            # Определяем статус код на основе типа ошибки
+            if "not found" in error_detail.lower():
+                status_code = 404
+            elif "access denied" in error_detail.lower():
+                status_code = 403
+            else:
+                status_code = 422
+
+            raise HTTPException(status_code=status_code, detail=error_detail)
+
+        # 5. Выполняем обновление события
+        try:
+            updated_event = await update_event_data(conn, event_update, telegram_data.user.id)
+
+            # 6. Возвращаем успешный результат
+            return EventUpdateResponse(
+                status="success",
+                ok=True,
+                message="Event updated successfully",
+                event=updated_event
+            )
+
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid JSON format"
+        )
+
+    except ValidationError as e:
+        error_details = []
+        for error in e.errors():
+            field_path = " -> ".join(str(loc) for loc in error["loc"])
+            error_details.append(
+                ErrorDetail(
+                    field=field_path,
+                    message=error["msg"]
+                )
+            )
+
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Validation error",
+                "errors": [detail.dict() for detail in error_details]
+            }
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post("/api/events/{event_id}/votes")
+async def submit_votes(event_id: int, request: Request, conn: asyncpg.Connection = Depends(get_db),
+                       telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    try:
+        data = await request.json()
+        slot_ids = data.get('slot_ids', [])
+        if not slot_ids:
+            raise HTTPException(status_code=400, detail="No slots selected")
+        response = await submit_votes_db(conn, event_id, user_id, slot_ids)
+        return response
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail="Database error")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/events/{event_id}/finalized")
+async def finalized_poll(event_id: int, request: Request, conn: asyncpg.Connection = Depends(get_db),
+                         telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    try:
+        data = await request.json()
+        slot_id = data.get('slot_id')
+        if not slot_id:
+            raise HTTPException(status_code=400, detail="No slot selected")
+        response = await finalized_event_db(conn, event_id, user_id, slot_id)
+        return response
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail="Database error")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/events/{event_id}/unfinalize")
+async def delete_event(event_id: int, conn: asyncpg.Connection = Depends(get_db),
+                       telegram_data=Depends(verify_telegram_webapp)):
+    user_id = telegram_data.user.id
+    return await unfinalize_event_db(conn, user_id, event_id)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=80)
+
