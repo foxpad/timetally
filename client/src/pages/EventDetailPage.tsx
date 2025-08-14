@@ -5,7 +5,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
 import { useDeleteEvent, useEvent, useUnfinalizeEvent } from '../hooks/useEvents';
-import { BookingIcon, PollIcon, ShareIcon } from '../components/Icons';
+import { BookingIcon, ClockIcon, PollIcon, ShareIcon } from '../components/Icons';
 import { Tooltip } from 'react-tooltip';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { format } from 'date-fns';
@@ -20,6 +20,7 @@ export default function EventDetail() {
     const [isEditingSelection, setIsEditingSelection] = useState(false);
 
     const { selectedSlot, isOpen, closeModal, handleParticipantsClick } = useParticipantsModal();
+    const [showEventTimezone, setShowEventTimezone] = useState(false);
 
     const { id, publicId } = useParams<{ id?: string; publicId?: string }>();
     const navigate = useNavigate();
@@ -83,6 +84,85 @@ export default function EventDetail() {
         });
     };
 
+    const getEventTimezone = () => {
+        // Если у вас есть поле timezone в eventDetail, используйте его
+        return eventDetail?.event.timezone || 'UTC';
+        // Если нет, можете использовать UTC или задать по умолчанию
+    };
+
+    // Обновленная функция formatDate с поддержкой переключения часовых поясов
+    const formatDateWithTimezone = (dateString: string, useEventTimezone: boolean = false) => {
+        try {
+            const date = new Date(dateString);
+            const targetTimezone = useEventTimezone ? getEventTimezone() : Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const zonedDate = toZonedTime(date, targetTimezone);
+            return useFormattedDate(zonedDate);
+        } catch {
+            return dateString;
+        }
+    };
+
+    // Обновленная функция formatTime с поддержкой переключения часовых поясов
+    const formatTimeWithTimezone = (dateString: string, useEventTimezone: boolean = false) => {
+        try {
+            const date = new Date(dateString);
+            const targetTimezone = useEventTimezone ? getEventTimezone() : Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const zonedDate = toZonedTime(date, targetTimezone);
+            return format(zonedDate, 'HH:mm', { locale: getLocale() });
+        } catch {
+            return dateString;
+        }
+    };
+
+    // Функция для отображения полной даты и времени с часовым поясом
+    const formatFullDateTime = (dateString: string, useEventTimezone: boolean = false) => {
+        try {
+            const date = new Date(dateString);
+            const targetTimezone = useEventTimezone ? getEventTimezone() : Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+            return new Intl.DateTimeFormat(languageCode === 'ru' ? 'ru-RU' : 'en-US', {
+                timeZone: targetTimezone,
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                timeZoneName: 'short'
+            }).format(date);
+        } catch {
+            return dateString;
+        }
+    };
+
+    // Компонент кнопки переключения часовых поясов
+    const TimezoneToggleButton = () => {
+        const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const eventTimezone = getEventTimezone();
+
+        // Показываем кнопку только если часовые пояса отличаются
+        if (userTimezone === eventTimezone) return null;
+
+        return (
+            <div className="flex items-center gap-2 px-2 py-1 absolute right-0 top-0">
+                <button
+                    onClick={() => setShowEventTimezone(!showEventTimezone)}
+                    className="flex items-center gap-1 px-2 py-1 text-xs text-tg-link bg-tg-secondaryBg rounded-md transition-colors"
+                    title={showEventTimezone ? t('switchToLocalTime') : t('switchToEventTime')}
+                >
+                    {showEventTimezone ? (
+                        eventDetail?.event.event_type === 'poll' ? (
+                            <PollIcon className="w-3 h-3" />
+                        ) : (
+                            <BookingIcon className="w-3 h-3t" />
+                        ))
+                        : <ClockIcon className='w-3 h-3' />
+                    }
+                    <span>{showEventTimezone ? t('eventTime') : t('localTime')}</span>
+                </button>
+            </div>
+        );
+    };
+
     const launchParams = retrieveLaunchParams();
     const languageCode = launchParams.tgWebAppData?.user?.language_code || 'ru';
 
@@ -117,30 +197,6 @@ export default function EventDetail() {
         }
 
         return format(date, 'MMMM d, EEE', { locale: enUS }); // Английский вариант
-    }
-
-    // Функция для форматирования даты с учетом часового пояса
-    const formatDate = (dateString: string) => {
-        try {
-            const date = new Date(dateString);
-            const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const zonedDate = toZonedTime(date, userTimezone);
-            return useFormattedDate(zonedDate);
-        } catch {
-            return dateString;
-        }
-    };
-
-    // Функция для форматирования времени
-    const formatTime = (dateString: string) => {
-        try {
-            const date = new Date(dateString);
-            const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const zonedDate = toZonedTime(date, userTimezone);
-            return format(zonedDate, 'HH:mm', { locale: getLocale() });
-        } catch {
-            return dateString;
-        }
     };
 
     const isFinalizedEvent = eventDetail?.event.final_slot_id !== null && eventDetail?.event.final_slot_id !== undefined;
@@ -152,7 +208,7 @@ export default function EventDetail() {
     const groupedSlots = useMemo(() => {
         if (!eventDetail) return {};
         if (isFinalizedEvent && finalSlot) {
-            const dateKey = formatDate(finalSlot.slot_start);
+            const dateKey = formatDateWithTimezone(finalSlot.slot_start, showEventTimezone);
             return {
                 [dateKey]: [finalSlot]
             };
@@ -161,14 +217,14 @@ export default function EventDetail() {
         const filteredSlots = getFilteredSlots(eventDetail.slots);
 
         return filteredSlots.reduce<Record<string, typeof eventDetail.slots>>((acc, slot) => {
-            const dateKey = formatDate(slot.slot_start);
+            const dateKey = formatDateWithTimezone(slot.slot_start, showEventTimezone);
             if (!acc[dateKey]) {
                 acc[dateKey] = [];
             }
             acc[dateKey].push(slot);
             return acc;
         }, {});
-    }, [eventDetail]);
+    }, [eventDetail, showEventTimezone]);
 
     // Обработчик выбора слота
     const handleSlotClick = (slotId: number) => {
@@ -472,11 +528,11 @@ export default function EventDetail() {
         return userVotedSlots;
     };
 
-    const formatSlotDateTime = (dateString: string) => {
+    const formatSlotDateTime = (dateString: string, useEventTimezone: boolean = false) => {
         try {
             const date = new Date(dateString);
-            const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const zonedDate = toZonedTime(date, userTimezone);
+            const targetTimezone = useEventTimezone ? getEventTimezone() : Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const zonedDate = toZonedTime(date, targetTimezone);
 
             const day = zonedDate.getDate().toString().padStart(2, '0');
             const month = (zonedDate.getMonth() + 1).toString().padStart(2, '0');
@@ -492,8 +548,8 @@ export default function EventDetail() {
 
     return (
         <div className="bg-tg-bg text-tg-text p-4 relative">
-            <ShareEventButton publicId={eventDetail.event.public_id} title={eventDetail.event.title} 
-            event_type={eventDetail.event.event_type} className='p-3 bg-tg-button rounded-full fixed opacity-90 top-3/4 right-4 z-50 animate-[bounce_2s_infinite]'/>
+            <ShareEventButton publicId={eventDetail.event.public_id} title={eventDetail.event.title}
+                event_type={eventDetail.event.event_type} className='p-3 bg-tg-button rounded-full fixed opacity-90 top-3/4 right-4 z-50 animate-[bounce_2s_infinite]' />
             <BackButton onBack={onBackButton} />
 
             <header className="flex items-center justify-center pb-4">
@@ -555,7 +611,7 @@ export default function EventDetail() {
                 </div>
                 <div>
                     {!isFinalizedEvent && !finalSlot && (
-                        <div className='px-2'>
+                        <div className='px-2 relative'>
                             {eventDetail.event.is_creator && eventDetail.event.event_type === 'poll' ? (
                                 <h3 className="w-full font-bold">{t('selectSlotToFinalize')}</h3>
                             ) : (
@@ -563,7 +619,7 @@ export default function EventDetail() {
                             )}
 
                             <div className="text-sm text-tg-hint">
-                                <p>{t('timezoneInfo')}</p>
+                                <p>{showEventTimezone ? t('timezoneInfoEvent') : t('timezoneInfoLocal')}</p>
                                 {eventDetail.event.event_type === 'poll' ?
                                     (eventDetail.event.multiple_choice ? (
                                         <p>{t('eventPollMultipleChoiceTrue')}</p>
@@ -580,7 +636,8 @@ export default function EventDetail() {
                     )}
 
                     {/* Блок с отображением слотов */}
-                    <div className="space-y-2 mt-2">
+                    <div className="space-y-2 mt-2 relative">
+                        <TimezoneToggleButton />
                         {isFinalizedEvent && finalSlot ? (
                             <div className="space-y-3">
                                 {/* Заголовок для завершенного события */}
@@ -592,7 +649,7 @@ export default function EventDetail() {
                                         </span>
                                     </div>
                                     <div className="font-bold text-emerald-800 dark:text-emerald-300">
-                                        {formatDate(finalSlot.slot_start)} • {formatTime(finalSlot.slot_start)}
+                                        {formatFullDateTime(finalSlot.slot_start, showEventTimezone)}
                                     </div>
                                     {finalSlot.vote_count > 0 && (
                                         <div className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">
@@ -629,7 +686,7 @@ export default function EventDetail() {
                                     `}
                                                         >
                                                             <span className="font-medium">
-                                                                {formatTime(slot.slot_start)}
+                                                                {formatTimeWithTimezone(slot.slot_start, showEventTimezone)}
                                                             </span>
                                                             <SlotParticipants
                                                                 slot={slot}
@@ -664,7 +721,7 @@ export default function EventDetail() {
                                     `}
                                                         >
                                                             <span className="font-medium">
-                                                                {formatTime(slot.slot_start)}
+                                                                {formatTimeWithTimezone(slot.slot_start, showEventTimezone)}
                                                             </span>
                                                             <SlotParticipants
                                                                 slot={slot}
@@ -724,7 +781,7 @@ export default function EventDetail() {
                                                         `}
                                                         >
                                                             <span className="font-medium">
-                                                                {formatTime(slot.slot_start)}
+                                                                {formatTimeWithTimezone(slot.slot_start, showEventTimezone)}
                                                             </span>
                                                         </motion.div>
                                                     );
@@ -761,7 +818,7 @@ export default function EventDetail() {
                                                         `}
                                                     >
                                                         <span className="font-medium">
-                                                            {formatTime(slot.slot_start)}
+                                                            {formatTimeWithTimezone(slot.slot_start, showEventTimezone)}
                                                         </span>
                                                     </motion.div>
                                                 );
@@ -811,7 +868,7 @@ export default function EventDetail() {
                                                             <div key={rowIndex} className='flex space-x-1'>
                                                                 {votedSlots.slice(rowIndex * 2, rowIndex * 2 + 2).map((slot) => (
                                                                     <div key={slot.slotId} className='whitespace-nowrap bg-tg-secondaryBg rounded-[4px] px-1 py-0.5'>
-                                                                        {formatSlotDateTime(slot.slotStart)}
+                                                                        {formatSlotDateTime(slot.slotStart, showEventTimezone)}
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -832,6 +889,7 @@ export default function EventDetail() {
                 onClose={closeModal}
                 slot={selectedSlot}
                 eventDetail={eventDetail}
+                showEventTimezone={showEventTimezone}
             />
         </div>
     );

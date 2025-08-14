@@ -675,7 +675,7 @@ export default function EditEvent() {
                 </div>
                 <div className='px-2'>
                     <div className="text-sm text-tg-hint">
-                        <p>{t('timezoneInfo')}</p>
+                        <p>{t('timezoneInfoLocal')}</p>
                     </div>
                 </div>
 

@@ -491,7 +491,7 @@ export default function CreateEvent() {
           {selectedDates.length > 0 && (
             <div className="space-y-4 mb-4">
               <div className="text-tg-hint text-sm">
-                <p>{t('timezoneInfo')}</p>
+                <p>{t('timezoneInfoLocal')}</p>
               </div>
               {selectedDates.map(date => (
                 <div key={date.toDateString()} className=" text-tg-buttonText">

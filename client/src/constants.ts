@@ -53,7 +53,8 @@ export const translations = {
     "confirmDeleteBookedDate": 'This date has booked. Are you sure you want to delete it?',
     'confirmDeleteVotedDate': 'This date has votes. Are you sure you want to delete it?',
     "confirmDeleteVotedSlot": "This slot has already been voted on. Are you sure you want to delete it?",
-    'timezoneInfo': 'The time is indicated in your time zone.',
+    'timezoneInfoLocal': 'The time is indicated in your time zone',
+    'timezoneInfoEvent': 'The time is indicated in time zone of event',
     'titleParticipants': 'Participants',
     'errorConfirmingSelection': 'Error saving selection',
     'selectionConfirmedSuccessfully': 'Your selection has been successfully saved!',
@@ -67,6 +68,10 @@ export const translations = {
     'unfinalizePoll': 'Are you sure you want to reopen the poll?',
     'eventUnfinalizeSuccessfully': 'The poll has been successfully reopen.',
     'errorUnfinalizeEvent': 'Poll reopening error',
+    "localTime": "My Time",
+    "eventTime": "Event Time",
+    "switchToLocalTime": "Switch to local time",
+    "switchToEventTime": "Switch to event time"
   },
   ru: {
     // Create Event
@@ -121,7 +126,8 @@ export const translations = {
     "confirmDeleteBookedDate": 'У этой даты есть брони. Вы уверены, что хотите ее удалить?',
     'confirmDeleteVotedDate': 'У этой даты есть голоса. Вы уверены, что хотите ее удалить?',
     "confirmDeleteVotedSlot": "За этот слот уже проголосовали. Вы уверены, что хотите его удалить?",
-    'timezoneInfo': 'Время указано в вашем часовом поясе',
+    'timezoneInfoLocal': 'Время указано в вашем часовом поясе',
+    'timezoneInfoEvent': 'Время указано в часовом поясе события',
     'titleParticipants': 'Участники',
     'errorConfirmingSelection': 'Ошибка при сохранении выбора',
     'selectionConfirmedSuccessfully': 'Ваш выбор успешно сохранён!',
@@ -135,5 +141,9 @@ export const translations = {
     'unfinalizePoll': 'Вы уверены что хотите возобновить опрос?',
     'eventUnfinalizeSuccessfully': 'Опрос успешно возобновлен',
     'errorUnfinalizeEvent': 'Ошибка возобновления опроса',
+    "localTime": "Моё время",
+    "eventTime": "Время события",
+    "switchToLocalTime": "Переключить на мое время",
+    "switchToEventTime": "Переключить на время события"
   }
 };

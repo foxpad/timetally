@@ -79,7 +79,7 @@ export default function ArchivedEventPage() {
                     <PollIcon className="w-5 h-5" />) : (
                     <BookingIcon className="w-5 h-5" />)}
                 </div>
-                <div key={event.id} className="bg-tg-secondary-bg rounded-[12px] flex-1 flex items-center justify-between mr-4">
+                <div key={event.id} className="bg-tg-secondary-bg rounded-[8px] flex-1 flex items-center justify-between mr-4">
                     <div>
                         <h3 className="font-medium">{event.title}</h3>
                         {event.event_type === 'poll' ? (

@@ -20,6 +20,7 @@ interface ParticipantsModalProps {
     onClose: () => void;
     slot: EventSlot | null;
     eventDetail?: EventFullResponse | null;
+    showEventTimezone?: boolean; // Добавляем новый пропс
 }
 
 export const SlotParticipants: React.FC<SlotParticipantsProps> = ({
@@ -111,6 +112,8 @@ export const ParticipantsModal: React.FC<ParticipantsModalProps> = ({
     isOpen,
     onClose,
     slot,
+    eventDetail,
+    showEventTimezone = false, // Значение по умолчанию
 }) => {
     const { t } = useLanguage();
     if (!isOpen || !slot) return null;
@@ -136,14 +139,13 @@ export const ParticipantsModal: React.FC<ParticipantsModalProps> = ({
                 return enUS;
         }
     };
+    const getEventTimezone = () => {
+        return eventDetail?.event.timezone || 'UTC';
+    };
 
     const useFormattedDate = (date: Date) => {
         const launchParams = retrieveLaunchParams();
         const locale = launchParams.tgWebAppData?.user?.language_code || 'ru';
-        const day = date.getDate();
-        const month = date.toLocaleDateString(locale, { month: 'long' });
-        const weekday = date.toLocaleDateString(locale, { weekday: 'short' });
-
         if (locale.startsWith('ru')) {
             // Русский вариант: "18 августа, пн"
             const dayMonth = new Intl.DateTimeFormat('ru-RU', {
@@ -161,24 +163,24 @@ export const ParticipantsModal: React.FC<ParticipantsModalProps> = ({
         return format(date, 'MMMM d, EEE', { locale: enUS }); // Английский вариант
     }
 
-    // Функция для форматирования даты с учетом часового пояса
-    const formatDate = (dateString: string) => {
+    // Обновленная функция formatDate с поддержкой переключения часовых поясов
+    const formatDateWithTimezone = (dateString: string, useEventTimezone: boolean = false) => {
         try {
             const date = new Date(dateString);
-            const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const zonedDate = toZonedTime(date, userTimezone);
+            const targetTimezone = useEventTimezone ? getEventTimezone() : Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const zonedDate = toZonedTime(date, targetTimezone);
             return useFormattedDate(zonedDate);
         } catch {
             return dateString;
         }
     };
 
-    // Функция для форматирования времени
-    const formatTime = (dateString: string) => {
+    // Обновленная функция formatTime с поддержкой переключения часовых поясов
+    const formatTimeWithTimezone = (dateString: string, useEventTimezone: boolean = false) => {
         try {
             const date = new Date(dateString);
-            const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const zonedDate = toZonedTime(date, userTimezone);
+            const targetTimezone = useEventTimezone ? getEventTimezone() : Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const zonedDate = toZonedTime(date, targetTimezone);
             return format(zonedDate, 'HH:mm', { locale: getLocale() });
         } catch {
             return dateString;
@@ -209,7 +211,7 @@ export const ParticipantsModal: React.FC<ParticipantsModalProps> = ({
                             <div className="p-4 border-b border-tg-secondaryBg flex-shrink-0">
                                 <div className="flex items-center justify-between">
                                     <h3 className="font-semibold text-tg-text">
-                                        {formatDate(slot.slot_start)} • {formatTime(slot.slot_start)}
+                                        {formatDateWithTimezone(slot.slot_start, showEventTimezone)} • {formatTimeWithTimezone(slot.slot_start, showEventTimezone)}
                                     </h3>
                                     <button
                                         onClick={onClose}
@@ -251,9 +253,10 @@ export const ParticipantsModal: React.FC<ParticipantsModalProps> = ({
                                                                 @{v.username}
                                                             </a>
                                                         )}
+                                                        {/* Если нужно показать время голосования с учетом часового пояса */}
                                                         {/* {v.voted_at && (
                                                             <span className="text-xs text-tg-hint">
-                                                                {formatDate(v.voted_at)} • {formatTime(v.voted_at)}
+                                                                {formatDateWithTimezone(v.voted_at, showEventTimezone)} • {formatTimeWithTimezone(v.voted_at, showEventTimezone)}
                                                             </span>
                                                         )} */}
                                                     </div>
@@ -271,7 +274,7 @@ export const ParticipantsModal: React.FC<ParticipantsModalProps> = ({
     );
 };
 
-/** ====== ХУК без изменений ====== */
+// Обновленный хук useParticipantsModal с поддержкой передачи showEventTimezone
 export const useParticipantsModal = () => {
     const [selectedSlot, setSelectedSlot] = useState<EventSlot | null>(null);
 

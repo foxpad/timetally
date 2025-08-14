@@ -271,10 +271,14 @@ async def create_or_update_user(conn: asyncpg.Connection, user_data: Union[WebAp
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
                     last_name = EXCLUDED.last_name,
-                    language_code = EXCLUDED.language_code,
-                    is_premium = EXCLUDED.is_premium,
-                    allows_write_to_pm = EXCLUDED.allows_write_to_pm,
+                    language_code = COALESCE(EXCLUDED.language_code, users.language_code),
+                    is_premium = COALESCE(EXCLUDED.is_premium, users.is_premium),
+                    allows_write_to_pm = COALESCE(EXCLUDED.allows_write_to_pm, users.allows_write_to_pm),
                     photo_url = COALESCE(EXCLUDED.photo_url, users.photo_url)
+                WHERE
+                    users.username IS DISTINCT FROM EXCLUDED.username OR
+                    users.first_name IS DISTINCT FROM EXCLUDED.first_name OR
+                    users.last_name IS DISTINCT FROM EXCLUDED.last_name
                 """,
                 *db_data.values()
             )

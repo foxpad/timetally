@@ -1,5 +1,4 @@
-const DEFAULT_RUL = "https://2baff4a1dd72.ngrok-free.app"
-
+const DEFAULT_RUL = import.meta.env.VITE_DEFAULT_URL;
 
 // @ts-ignore
 const tg = window.Telegram.WebApp;
