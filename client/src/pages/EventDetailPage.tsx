@@ -122,12 +122,11 @@ export default function EventDetail() {
 
             return new Intl.DateTimeFormat(languageCode === 'ru' ? 'ru-RU' : 'en-US', {
                 timeZone: targetTimezone,
-                year: 'numeric',
-                month: 'short',
                 day: 'numeric',
+                month: 'long',
+                year: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-                timeZoneName: 'short'
             }).format(date);
         } catch {
             return dateString;

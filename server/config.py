@@ -9,3 +9,5 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH")
 
 DB_URL = os.getenv("DB_URL")
+
+CLIENT_URL = os.getenv("CLIENT_URL")

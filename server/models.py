@@ -132,6 +132,7 @@ class UserResponse(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     photo_url: Optional[str] = None
+    language_code: Optional[str] = None
 
 
 class SlotVoterResponse(UserResponse):

@@ -16,10 +16,13 @@ import json
 
 from pydantic import ValidationError
 
+from bot_notifications import send_event_created_pm, send_event_deleted_pm, send_event_updated_pm, \
+    send_voter_vote_notification_from_result, notify_about_new_votes_from_submit_result, notify_event_finalized, \
+    notify_event_restored, notify_event_updated_participants_from_full
 from models import WebAppUser, EventCreate, EventResponse, EventUpdate, EventUpdateResponse, ErrorResponse, ErrorDetail
 from db import create_or_update_user, create_event, get_active_user_events, get_archived_user_events, \
     get_event_details_db, delete_event_db, update_event_data, validate_event_update_permissions, submit_votes_db, \
-    finalized_event_db, unfinalize_event_db, get_event_by_public_id
+    finalized_event_db, get_event_by_public_id, restore_event_db
 
 from db import Database
 from bot import telegram_bot, verify_webapp_init_data, BOT_TOKEN, WEBHOOK_SECRET, WEBHOOK_PATH
@@ -156,6 +159,7 @@ async def create_new_event(request: Request, conn: asyncpg.Connection = Depends(
         data = json.loads(raw_body)
         event_data = EventCreate(**data)
         event = await create_event(conn, event_data, telegram_data.user.id)
+        asyncio.create_task(send_event_created_pm(telegram_data.user, event))
         return {"status": "success", "ok": True, "event": event.model_dump()}
     except json.JSONDecodeError:
         raise HTTPException(status_code=422, detail="Invalid JSON format")
@@ -209,7 +213,10 @@ async def get_event_details(event_public_id: str, conn: asyncpg.Connection = Dep
 async def delete_event(event_id: int, conn: asyncpg.Connection = Depends(get_db),
                        telegram_data=Depends(verify_telegram_webapp)):
     user_id = telegram_data.user.id
-    return await delete_event_db(conn, user_id, event_id)
+    result = await delete_event_db(conn, user_id, event_id)
+    if result.get("ok"):
+        asyncio.create_task(send_event_deleted_pm(telegram_data.user, result.get("event"), fallback_event_id=event_id))
+    return result
 
 
 @app.put("/api/events/{event_id}", response_model=Union[EventUpdateResponse, ErrorResponse])
@@ -245,6 +252,13 @@ async def update_event(event_id: int, request: Request, conn: asyncpg.Connection
         # 5. Выполняем обновление события
         try:
             updated_event = await update_event_data(conn, event_update, telegram_data.user.id)
+            asyncio.create_task(send_event_updated_pm(telegram_data.user, updated_event.event))
+            asyncio.create_task(
+                notify_event_updated_participants_from_full(
+                    full_event_response=updated_event,
+                    actor_telegram_user_id=telegram_data.user.id,
+                )
+            )
 
             # 6. Возвращаем успешный результат
             return EventUpdateResponse(
@@ -298,42 +312,118 @@ async def update_event(event_id: int, request: Request, conn: asyncpg.Connection
 @app.post("/api/events/{event_id}/votes")
 async def submit_votes(event_id: int, request: Request, conn: asyncpg.Connection = Depends(get_db),
                        telegram_data=Depends(verify_telegram_webapp)):
-    user_id = telegram_data.user.id
+    voter_user = telegram_data.user
+
+    # 1) Безопасно читаем JSON
     try:
-        data = await request.json()
-        slot_ids = data.get('slot_ids', [])
-        if not slot_ids:
-            raise HTTPException(status_code=400, detail="No slots selected")
-        response = await submit_votes_db(conn, event_id, user_id, slot_ids)
-        return response
-    except asyncpg.PostgresError as e:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON format")
+
+    # 2) Достаём и валидируем slot_ids
+    slot_ids = payload.get("slot_ids")
+    if not isinstance(slot_ids, list) or len(slot_ids) == 0:
+        raise HTTPException(status_code=400, detail="No slots selected")
+
+    # приводим к уникальным int, чтобы не падать на дубликатах
+    try:
+        slot_ids = sorted({int(s) for s in slot_ids})
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="slot_ids must be an array of integers")
+
+    if not slot_ids:
+        raise HTTPException(status_code=400, detail="No slots selected")
+
+    # 3) Пишем голоса
+    try:
+        result = await submit_votes_db(conn, event_id, voter_user.id, slot_ids)
+    except asyncpg.PostgresError:
         raise HTTPException(status_code=500, detail="Database error")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # 4) Уведомления (не блокируем ответ API)
+    #    - Создателю шлём только если были изменения (added/removed)
+    #    - Участнику шлём всегда подтверждение
+    try:
+        from_notifications = False  # просто чтобы подчеркнуть, что ниже — фоновая логика
+        if result.get("slots_added") or result.get("slots_removed"):
+            asyncio.create_task(
+                notify_about_new_votes_from_submit_result(result, voter_user)
+            )
+        else:
+            # нет изменений — отправим только участнику подтверждение
+            asyncio.create_task(
+                send_voter_vote_notification_from_result(result, voter_user)
+            )
+    except Exception as e:
+        # ошибки отправки уведомлений не мешают основному ответу
+        print(f"[submit_votes] notify failed: {e}")
+
+    # 5) Возвращаем результат записи голосов
+    return result
 
 
 @app.post("/api/events/{event_id}/finalized")
-async def finalized_poll(event_id: int, request: Request, conn: asyncpg.Connection = Depends(get_db),
-                         telegram_data=Depends(verify_telegram_webapp)):
+async def finalized_poll(
+    event_id: int,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_db),
+    telegram_data=Depends(verify_telegram_webapp)
+):
     user_id = telegram_data.user.id
     try:
         data = await request.json()
-        slot_id = data.get('slot_id')
-        if not slot_id:
-            raise HTTPException(status_code=400, detail="No slot selected")
-        response = await finalized_event_db(conn, event_id, user_id, slot_id)
-        return response
-    except asyncpg.PostgresError as e:
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON format")
+
+    slot_id = data.get("slot_id")
+    if not slot_id:
+        raise HTTPException(status_code=400, detail="No slot selected")
+
+    try:
+        result = await finalized_event_db(conn, event_id, user_id, int(slot_id))
+    except asyncpg.PostgresError:
         raise HTTPException(status_code=500, detail="Database error")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Фоново шлём уведомления (чтобы не тормозить ответ)
+    try:
+        asyncio.create_task(notify_event_finalized(result))
+    except Exception as e:
+        print(f"[finalized_poll] notify failed: {e}")
+
+    return result
+
 
 @app.post("/api/events/{event_id}/unfinalize")
-async def delete_event(event_id: int, conn: asyncpg.Connection = Depends(get_db),
-                       telegram_data=Depends(verify_telegram_webapp)):
+async def restore_event(
+    event_id: int,
+    conn: asyncpg.Connection = Depends(get_db),
+    telegram_data=Depends(verify_telegram_webapp),
+):
     user_id = telegram_data.user.id
-    return await unfinalize_event_db(conn, user_id, event_id)
+    try:
+        result = await restore_event_db(conn, user_id, event_id)
+    except asyncpg.PostgresError:
+        raise HTTPException(status_code=500, detail="Database error")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Фоново шлём уведомления, чтобы не блокировать ответ
+    try:
+        asyncio.create_task(notify_event_restored(result))
+    except Exception as e:
+        print(f"[restore_event] notify failed: {e}")
+
+    return result
 
 
 if __name__ == "__main__":

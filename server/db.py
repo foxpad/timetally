@@ -659,11 +659,14 @@ async def delete_event_db(conn: asyncpg.Connection, user_id: int, event_id: int)
                     detail="You don't own this event"
                 )
             else:
-                await conn.execute(
-                    "UPDATE events SET deleted_at = $1 WHERE id = $2",
+                row = await conn.fetchrow(
+                    "UPDATE events SET deleted_at = $1 WHERE id = $2 RETURNING id, title",
                     datetime.utcnow(), event_id
                 )
-                return True
+                return {
+                    "ok": True,
+                    "event": dict(row)
+                }
     except ValueError as e:
         raise HTTPException(
             status_code=400,
@@ -712,7 +715,8 @@ async def get_event_by_id(conn: asyncpg.Connection, event_id: int, user_id: int)
 
     # Получаем участников события
     participants_query = """
-        SELECT DISTINCT u.telegram_user_id, u.username, u.first_name, u.last_name, u.photo_url
+        SELECT DISTINCT u.telegram_user_id, u.username, u.first_name, u.last_name, u.photo_url,
+         COALESCE(u.language_code, 'en') AS language_code
         FROM users u
         JOIN event_votes v ON u.id = v.user_id
         JOIN event_slots s ON v.slot_id = s.id
@@ -898,134 +902,185 @@ async def validate_event_update_permissions(conn: asyncpg.Connection, event_upda
     return {"valid": True, "event": event}
 
 
-async def submit_votes_db(conn: asyncpg.Connection, event_id: int, telegram_user_id: int, slot_ids: List[int]) -> Dict[
-    str, Any]:
-    """
-    Оптимизированная версия функции для голосования с минимальным количеством запросов к БД
-    """
-    print(event_id, telegram_user_id, slot_ids)
+async def submit_votes_db(conn: asyncpg.Connection, event_id: int, telegram_user_id: int, slot_ids: List[int]
+) -> Dict[str, Any]:
 
-    # Валидация входных данных
     if not slot_ids:
         raise HTTPException(status_code=400, detail="No slot IDs provided")
 
-    # 1. ОБЪЕДИНЯЕМ ВСЕ ПРОВЕРКИ В ОДИН ЗАПРОС
-    # Получаем всю необходимую информацию одним запросом через CTE и JOIN
+    # Все проверки + нужные поля события и создателя за 1 запрос
     validation_query = """
-    WITH user_data AS (
-        SELECT id as user_id FROM users WHERE telegram_user_id = $1
-    ),
-    event_data AS (
-        SELECT id, multiple_choice FROM events 
-        WHERE id = $2 AND deleted_at IS NULL
-    ),
-    slot_data AS (
-        SELECT id FROM event_slots 
-        WHERE event_id = $2 AND id = ANY($3::int[]) AND deleted_at IS NULL
-    )
-    SELECT 
-        u.user_id,
-        e.id as event_id,
-        e.multiple_choice,
-        array_agg(s.id ORDER BY s.id) as valid_slot_ids,
-        count(s.id) as valid_slots_count
-    FROM user_data u
-    CROSS JOIN event_data e
-    LEFT JOIN slot_data s ON true
-    GROUP BY u.user_id, e.id, e.multiple_choice
-    """
-
-    result = await conn.fetchrow(validation_query, telegram_user_id, event_id, slot_ids)
-
-    # Проверка результатов валидации
-    if not result or not result['user_id']:
-        raise ValueError("User not found")
-
-    if not result['event_id']:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    if not result['multiple_choice'] and len(slot_ids) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Multiple selection not allowed for this event"
+        WITH user_data AS (
+            SELECT id AS user_id, telegram_user_id AS voter_telegram_user_id
+            FROM users WHERE telegram_user_id = $1
+        ),
+        event_data AS (
+            SELECT e.id,
+                   e.multiple_choice,
+                   e.title,
+                   e.description,
+                   e.public_id,
+                   e.event_type,
+                   e.timezone,
+                   owner.telegram_user_id AS creator_telegram_user_id,
+                   owner.language_code     AS creator_language_code  -- ⬅️ добавили язык создателя
+                   -- либо так, чтобы не было NULL:
+                   -- COALESCE(owner.language_code, 'en') AS creator_language_code
+            FROM events e
+            JOIN users owner ON owner.id = e.user_id
+            WHERE e.id = $2 AND e.deleted_at IS NULL
+        ),
+        slot_data AS (
+            SELECT id
+            FROM event_slots
+            WHERE event_id = $2 AND id = ANY($3::int[]) AND deleted_at IS NULL
         )
+        SELECT
+            u.user_id,
+            u.voter_telegram_user_id,
+            e.id AS event_id,
+            e.multiple_choice,
+            e.title,
+            e.description,
+            e.public_id,
+            e.event_type,
+            e.timezone,
+            e.creator_telegram_user_id,
+            e.creator_language_code,                             -- ⬅️ протащили до селекта
+            array_agg(s.id ORDER BY s.id) AS valid_slot_ids,
+            count(s.id) AS valid_slots_count
+        FROM user_data u
+        CROSS JOIN event_data e
+        LEFT JOIN slot_data s ON true
+        GROUP BY
+            u.user_id, u.voter_telegram_user_id,
+            e.id, e.multiple_choice, e.title, e.description, e.public_id, e.event_type, e.timezone,
+            e.creator_telegram_user_id, e.creator_language_code   -- ⬅️ добавили в GROUP BY
+        """
 
-    # Проверяем, что все переданные slot_ids валидны
-    valid_slot_ids = result['valid_slot_ids'] or []
-    if result['valid_slots_count'] != len(slot_ids):
+    row = await conn.fetchrow(validation_query, telegram_user_id, event_id, slot_ids)
+
+    # Валидация
+    if not row or not row["user_id"]:
+        raise ValueError("User not found")
+    if not row["event_id"]:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if not row["multiple_choice"] and len(slot_ids) > 1:
+        raise HTTPException(status_code=400, detail="Multiple selection not allowed for this event")
+
+    valid_slot_ids = row["valid_slot_ids"] or []
+    if row["valid_slots_count"] != len(slot_ids):
         raise HTTPException(status_code=400, detail="Invalid slot IDs provided")
 
-    user_id = result['user_id']
+    user_id = row["user_id"]
 
-    # 2. УМНОЕ ОБНОВЛЕНИЕ - УДАЛЯЕМ ТОЛЬКО НЕНУЖНЫЕ, ДОБАВЛЯЕМ ТОЛЬКО НОВЫЕ
+    # Обновляем только разницу
     async with conn.transaction():
-        # Получаем текущие голоса пользователя для этого события
         current_votes = await conn.fetch(
-            """SELECT slot_id FROM event_votes 
-               WHERE event_id = $1 AND user_id = $2 AND deleted_at IS NULL""",
+            """
+            SELECT slot_id
+            FROM event_votes
+            WHERE event_id = $1 AND user_id = $2 AND deleted_at IS NULL
+            """,
             event_id, user_id
         )
-        current_slot_ids = {vote['slot_id'] for vote in current_votes}
+        current_slot_ids = {r["slot_id"] for r in current_votes}
         new_slot_ids = set(slot_ids)
 
-        # Определяем какие голоса нужно удалить (есть в текущих, но нет в новых)
         slots_to_remove = current_slot_ids - new_slot_ids
-
-        # Определяем какие голоса нужно добавить (есть в новых, но нет в текущих)
         slots_to_add = new_slot_ids - current_slot_ids
 
-        # Удаляем только ненужные голоса
         if slots_to_remove:
             await conn.execute(
-                """UPDATE event_votes 
-                   SET deleted_at = $4 
-                   WHERE event_id = $1 AND user_id = $2 AND slot_id = ANY($3::int[]) AND deleted_at IS NULL""",
-                event_id, user_id, list(slots_to_remove), datetime.now()
+                """
+                UPDATE event_votes
+                SET deleted_at = $4
+                WHERE event_id = $1
+                  AND user_id  = $2
+                  AND slot_id  = ANY($3::int[])
+                  AND deleted_at IS NULL
+                """,
+                event_id, user_id, list(slots_to_remove), datetime.utcnow()
             )
 
-        # Добавляем только новые голоса
         if slots_to_add:
-            values = [(event_id, slot_id, user_id) for slot_id in slots_to_add]
             await conn.executemany(
-                """INSERT INTO event_votes (event_id, slot_id, user_id) 
-                   VALUES ($1, $2, $3)""",
-                values
+                """
+                INSERT INTO event_votes (event_id, slot_id, user_id)
+                VALUES ($1, $2, $3)
+                """,
+                [(event_id, sid, user_id) for sid in slots_to_add]
             )
 
-    return {"status": "success", "ok": True, "votes_submitted": len(slot_ids)}
+    event_dict = {
+        "id": row["event_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "public_id": row["public_id"],
+        "event_type": row["event_type"],
+        "multiple_choice": row["multiple_choice"],
+        "timezone": row["timezone"],
+    }
+
+    return {
+        "status": "success",
+        "ok": True,
+        "votes_submitted": len(slot_ids),
+        "slots_added": sorted(list(slots_to_add)),
+        "slots_removed": sorted(list(slots_to_remove)),
+        "event": event_dict,
+        "creator_telegram_user_id": row["creator_telegram_user_id"],
+        "creator_language_code": (row["creator_language_code"] or "en"),  # ⬅️ сразу доступен
+        "voter_telegram_user_id": row["voter_telegram_user_id"],
+    }
 
 
-async def finalized_event_db(conn: asyncpg.Connection, event_id: int, telegram_user_id: int, slot_id: int) -> Dict[str, Any]:
-    # 1. ПРОВЕРЯЕМ ВСЕ УСЛОВИЯ ОДНИМ ЗАПРОСОМ
+async def finalized_event_db(
+    conn: asyncpg.Connection,
+    event_id: int,
+    telegram_user_id: int,
+    slot_id: int
+) -> Dict[str, Any]:
+    # 1) Валидация + получение данных события/слота/создателя одним запросом
     validation_query = """
     WITH user_data AS (
-        SELECT id as user_id FROM users WHERE telegram_user_id = $1
+        SELECT id AS user_id, telegram_user_id AS actor_tg_id
+        FROM users WHERE telegram_user_id = $1
     ),
     event_data AS (
         SELECT 
             e.id,
-            e.user_id as event_creator_id,
+            e.user_id AS event_creator_id,
             e.title,
+            e.public_id,
+            e.event_type,
+            e.timezone,
             e.final_slot_id,
-            e.deleted_at as event_deleted_at
-        FROM events e 
+            e.deleted_at AS event_deleted_at,
+            u.telegram_user_id AS creator_telegram_user_id,
+            COALESCE(u.language_code, 'en') AS creator_language_code
+        FROM events e
+        JOIN users u ON u.id = e.user_id
         WHERE e.id = $2 AND e.deleted_at IS NULL
     ),
     slot_data AS (
-        SELECT 
-            s.id,
-            s.slot_start,
-            s.deleted_at as slot_deleted_at
-        FROM event_slots s 
+        SELECT s.id, s.slot_start, s.deleted_at AS slot_deleted_at
+        FROM event_slots s
         WHERE s.event_id = $2 AND s.id = $3 AND s.deleted_at IS NULL
     )
     SELECT 
         u.user_id,
-        e.id as event_id,
+        u.actor_tg_id,
+        e.id AS event_id,
         e.event_creator_id,
-        e.title as event_title,
-        e.final_slot_id as current_final_slot_id,
-        s.id as slot_id,
+        e.title AS event_title,
+        e.public_id,
+        e.event_type,
+        e.timezone,
+        e.final_slot_id AS current_final_slot_id,
+        e.creator_telegram_user_id,
+        e.creator_language_code,
+        s.id AS slot_id,
         s.slot_start,
         CASE 
             WHEN u.user_id IS NULL THEN 'user_not_found'
@@ -1034,88 +1089,186 @@ async def finalized_event_db(conn: asyncpg.Connection, event_id: int, telegram_u
             WHEN e.final_slot_id IS NOT NULL THEN 'already_finalized'
             WHEN s.id IS NULL THEN 'slot_not_found'
             ELSE 'valid'
-        END as validation_status
+        END AS validation_status
     FROM user_data u
-    FULL OUTER JOIN event_data e ON true
-    FULL OUTER JOIN slot_data s ON true
+    FULL OUTER JOIN event_data e ON TRUE
+    FULL OUTER JOIN slot_data s ON TRUE
     """
 
-    result = await conn.fetchrow(validation_query, telegram_user_id, event_id, slot_id)
-
-    # Обработка результатов валидации
-    if not result:
+    row = await conn.fetchrow(validation_query, telegram_user_id, event_id, slot_id)
+    if not row:
         raise HTTPException(status_code=500, detail="Validation query failed")
 
-    validation_status = result['validation_status']
-
-    if validation_status == 'user_not_found':
+    status = row["validation_status"]
+    if status == "user_not_found":
         raise ValueError("User not found")
-    elif validation_status == 'event_not_found':
+    elif status == "event_not_found":
         raise HTTPException(status_code=404, detail="Event not found or already deleted")
-    elif validation_status == 'not_creator':
+    elif status == "not_creator":
         raise HTTPException(status_code=403, detail="Only event creator can finalize the event")
-    elif validation_status == 'already_finalized':
+    elif status == "already_finalized":
         raise HTTPException(status_code=400, detail="Event is already finalized")
-    elif validation_status == 'slot_not_found':
+    elif status == "slot_not_found":
         raise HTTPException(status_code=400, detail="Invalid slot ID or slot is deleted")
-    elif validation_status != 'valid':
-        raise HTTPException(status_code=400, detail=f"Validation failed: {validation_status}")
+    elif status != "valid":
+        raise HTTPException(status_code=400, detail=f"Validation failed: {status}")
 
-    # 2. ЗАВЕРШАЕМ СОБЫТИЕ - УСТАНАВЛИВАЕМ ФИНАЛЬНЫЙ СЛОТ
+    # 2) Финализируем
     async with conn.transaction():
-        # Обновляем событие, устанавливая final_slot_id
         finalize_result = await conn.execute(
-            """UPDATE events 
-               SET final_slot_id = $2, updated_at = NOW() 
-               WHERE id = $1 AND deleted_at IS NULL""",
+            """
+            UPDATE events
+            SET final_slot_id = $2, updated_at = NOW()
+            WHERE id = $1 AND deleted_at IS NULL
+            """,
             event_id, slot_id
         )
-
-        # Проверяем, что обновление прошло успешно
         if finalize_result != "UPDATE 1":
             raise HTTPException(status_code=500, detail="Failed to finalize event")
+
+    # 3) Получаем список участников (все, кто голосовал), их tg id и язык
+    participants_rows = await conn.fetch(
+        """
+        SELECT DISTINCT u.telegram_user_id, COALESCE(u.language_code, 'en') AS language_code
+        FROM event_votes ev
+        JOIN users u ON u.id = ev.user_id
+        WHERE ev.event_id = $1
+          AND ev.deleted_at IS NULL
+        """,
+        event_id
+    )
+    participants = [
+        {"telegram_user_id": r["telegram_user_id"], "language_code": r["language_code"]}
+        for r in participants_rows
+    ]
 
     return {
         "status": "success",
         "ok": True,
         "message": "Event finalized successfully",
+        "event": {
+            "id": row["event_id"],
+            "title": row["event_title"],
+            "public_id": row["public_id"],
+            "event_type": row["event_type"],
+            "timezone": row["timezone"],
+        },
+        "final_slot": {
+            "id": row["slot_id"],
+            "slot_start": row["slot_start"],  # datetime из БД
+        },
+        "creator": {
+            "telegram_user_id": row["creator_telegram_user_id"],
+            "language_code": row["creator_language_code"],
+        },
+        "participants": participants,  # [{telegram_user_id, language_code}]
     }
 
 
-async def unfinalize_event_db(conn: asyncpg.Connection, telegram_user_id: int, event_id: int) -> Dict[str, Any]:
+async def restore_event_db(conn: asyncpg.Connection, telegram_user_id: int, event_id: int) -> Dict[str, Any]:
     """
-    Отменяет завершение события (убирает final_slot_id)
+    Возобновляет (восстанавливает) событие после soft-delete (deleted_at -> NULL).
+    Возвращает детали события, создателя и список участников (все, кто голосовал).
     """
-    # Проверяем права пользователя
+    # 1) Проверка прав + получение данных события и создателя
     validation_query = """
-    SELECT 
-        e.id,
-        e.final_slot_id,
-        u.id as user_id
-    FROM events e
-    JOIN users u ON e.user_id = u.id
-    WHERE e.id = $1 AND u.telegram_user_id = $2 AND e.deleted_at IS NULL
+    WITH actor AS (
+        SELECT id AS actor_user_id
+        FROM users
+        WHERE telegram_user_id = $1
+    ),
+    event_row AS (
+        SELECT
+            e.id,
+            e.user_id AS creator_id,
+            e.title,
+            e.public_id,
+            e.event_type,
+            e.timezone,
+            e.deleted_at,
+            u.telegram_user_id AS creator_telegram_user_id,
+            COALESCE(u.language_code, 'en') AS creator_language_code
+        FROM events e
+        JOIN users u ON u.id = e.user_id
+        WHERE e.id = $2
+    )
+    SELECT
+        a.actor_user_id,
+        e.id AS event_id,
+        e.creator_id,
+        e.title AS event_title,
+        e.public_id,
+        e.event_type,
+        e.timezone,
+        e.deleted_at,
+        e.creator_telegram_user_id,
+        e.creator_language_code,
+        CASE
+            WHEN e.id IS NULL THEN 'event_not_found'          -- Проверяем сначала событие
+            WHEN a.actor_user_id IS NULL THEN 'user_not_found' -- Потом пользователя
+            WHEN e.creator_id != a.actor_user_id THEN 'not_creator'
+            ELSE 'valid'
+        END AS validation_status
+    FROM event_row e
+    LEFT JOIN actor a ON TRUE  -- Или используем CROSS JOIN
     """
 
-    result = await conn.fetchrow(validation_query, event_id, telegram_user_id)
+    row = await conn.fetchrow(validation_query, telegram_user_id, event_id)
+    if not row:
+        raise HTTPException(status_code=500, detail="Validation query failed")
 
-    if not result:
-        raise HTTPException(status_code=404, detail="Event not found or access denied")
+    status = row["validation_status"]
+    if status == "user_not_found":
+        raise ValueError("User not found")
+    elif status == "event_not_found":
+        raise HTTPException(status_code=404, detail="Event not found")
+    elif status == "not_creator":
+        raise HTTPException(status_code=403, detail="Only event creator can restore the event")
+    elif status != "valid":
+        raise HTTPException(status_code=400, detail=f"Validation failed: {status}")
 
-    if not result['final_slot_id']:
-        raise HTTPException(status_code=400, detail="Event is not finalized")
-
-    # Убираем финализацию
-    await conn.execute(
-        """UPDATE events 
-           SET final_slot_id = NULL, updated_at = NOW() 
-           WHERE id = $1 AND deleted_at IS NULL""",
+    # 2) Восстанавливаем событие (сбрасываем deleted_at)
+    updated = await conn.execute(
+        """
+        UPDATE events
+        SET final_slot_id = NULL, updated_at = NOW()
+        WHERE id = $1
+        """,
         event_id
     )
+    if updated != "UPDATE 1":
+        raise HTTPException(status_code=500, detail="Failed to restore event")
+
+    # 3) Собираем участников (все, кто голосовал)
+    participants_rows = await conn.fetch(
+        """
+        SELECT DISTINCT u.telegram_user_id, COALESCE(u.language_code, 'en') AS language_code
+        FROM event_votes ev
+        JOIN users u ON u.id = ev.user_id
+        WHERE ev.event_id = $1
+          AND ev.deleted_at IS NULL
+        """,
+        event_id
+    )
+    participants = [
+        {"telegram_user_id": r["telegram_user_id"], "language_code": r["language_code"]}
+        for r in participants_rows
+    ]
 
     return {
         "status": "success",
         "ok": True,
-        "message": "Event finalization removed successfully",
-        "event_id": event_id
+        "message": "Event restored successfully",
+        "event": {
+            "id": row["event_id"],
+            "title": row["event_title"],
+            "public_id": row["public_id"],
+            "event_type": row["event_type"],
+            "timezone": row["timezone"],
+        },
+        "creator": {
+            "telegram_user_id": row["creator_telegram_user_id"],
+            "language_code": row["creator_language_code"],
+        },
+        "participants": participants,  # [{telegram_user_id, language_code}]
     }
