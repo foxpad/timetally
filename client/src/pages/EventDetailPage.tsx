@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
+import { AddToCalendarButton } from 'add-to-calendar-button-react';
+import { produce } from 'immer';
 import { motion, AnimatePresence } from 'framer-motion';
-import { mainButton, retrieveLaunchParams, secondaryButton } from "@telegram-apps/sdk-react";
+import { mainButton, openLink, retrieveLaunchParams, secondaryButton } from "@telegram-apps/sdk-react";
 import { useLanguage } from '../context/LanguageContext';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
@@ -14,7 +16,7 @@ import { VoteData } from '../api/types';
 import { finalizedPoll, submitVotes } from '../api/eventApi';
 import { SlotParticipants, ParticipantsModal, useParticipantsModal } from '../components/SlotParticipants';
 import { ShareEventButton } from '../components/ShareEventButton';
-
+import { showAlert, showConfirm } from '../lib/telegramPopup';
 
 export default function EventDetail() {
     const [isEditingSelection, setIsEditingSelection] = useState(false);
@@ -25,7 +27,11 @@ export default function EventDetail() {
     const { id, publicId } = useParams<{ id?: string; publicId?: string }>();
     const navigate = useNavigate();
     const { t } = useLanguage();
-    const { eventDetail, loading, error } = useEvent(Number(id), publicId);
+    const { eventDetail, loading, error, setEvent } = useEvent(Number(id), publicId);
+
+    const [showLocationModal, setShowLocationModal] = useState(false);
+    const [tempLocation, setTempLocation] = useState(eventDetail?.event.location || '');
+    const [pendingFinalizeSlot, setPendingFinalizeSlot] = useState<number | null>(null);
 
     const [finalizedSlot, setFinalizedSlot] = useState<number | null>(null);
 
@@ -252,23 +258,32 @@ export default function EventDetail() {
         if (!eventDetail) return;
 
         if (finalizedSlot !== null) {
-            const response = await finalizedPoll(eventDetail.event.id, finalizedSlot);
+            if (!eventDetail.event.location && !tempLocation) {
+                setPendingFinalizeSlot(finalizedSlot);
+                setShowLocationModal(true);
+                return;
+            }
+            const response = await finalizedPoll(eventDetail.event.id, finalizedSlot, tempLocation || eventDetail.event.location || undefined);
             if (response) {
-                window.alert(t('eventFinalizedSuccessfully'));
+                await showAlert(t('eventFinalizedSuccessfully'));
                 setFinalizedSlot(null);
-                window.location.reload();
+                setEvent(prev => produce(prev, draft => {
+                    if (!draft) return;
+
+                    draft.event.final_slot_id = finalizedSlot;
+                }));
             } else {
-                window.alert(t('errorFinalizedEvent'));
+                await showAlert(t('errorFinalizedEvent'));
             };
         } else {
-            const isConfirmed = window.confirm(t('confirmDeleteEvent'));
+            const isConfirmed = await showConfirm(t('confirmDeleteEvent'));
             if (!isConfirmed) return;
             const response = await useDeleteEvent(eventDetail.event.id);
             if (response) {
-                window.alert(t('eventDeletedSuccessfully'));
+                await showAlert(t('eventDeletedSuccessfully'));
                 navigate('/');
             } else {
-                window.alert(t('errorDeletingEvent'));
+                await showAlert(t('errorDeletingEvent'));
             };
         };
 
@@ -319,14 +334,27 @@ export default function EventDetail() {
             const response = await submitVotes(voteData);
             if (response) {
                 setIsEditingSelection(false);
-                window.alert(t('selectionConfirmedSuccessfully'));
-                window.location.reload();
+                await showAlert(t('selectionConfirmedSuccessfully'));
+                setEvent(prev => produce(prev, draft => {
+                    if (!draft) return;
+
+                    draft.current_user_votes = selectedSlots.map(slotId => ({
+                        slot_id: slotId,
+                        created_at: new Date().toISOString()
+                    }));
+
+                    draft.slots.forEach(slot => {
+                        if (selectedSlots.includes(slot.id)) {
+                            slot.vote_count += 1;
+                        }
+                    });
+                }));
             } else {
-                window.alert(t('errorSubmittingVotes'));
+                await showAlert(t('errorSubmittingVotes'));
             };
         } catch (error) {
             console.error("Failed to submit votes:", error);
-            window.alert(t('errorConfirmingSelection'));
+            await showAlert(t('errorConfirmingSelection'));
             setSelectedSlots(eventDetail.current_user_votes.map(vote => vote.slot_id));
         } finally {
             mainButton.setParams({
@@ -339,14 +367,18 @@ export default function EventDetail() {
     const handleSecondaryButton = async () => {
         if (!eventDetail) return;
         if (isFinalizedEvent && finalSlot) {
-            const isConfirmed = window.confirm(t('unfinalizePoll'));
+            const isConfirmed = await showConfirm(t('unfinalizePoll'));
             if (!isConfirmed) return;
             const response = await useUnfinalizeEvent(eventDetail.event.id);
             if (response) {
-                window.alert(t('eventUnfinalizeSuccessfully'));
-                window.location.reload();
+                await showAlert(t('eventUnfinalizeSuccessfully'));
+                setEvent(prev => produce(prev, draft => {
+                    if (!draft) return;
+
+                    draft.event.final_slot_id = null;
+                }));
             } else {
-                window.alert(t('errorUnfinalizeEvent'));
+                await showAlert(t('errorUnfinalizeEvent'));
             };
         } else {
             navigate(`/event/${eventDetail.event.id}/edit`, {
@@ -357,6 +389,16 @@ export default function EventDetail() {
 
     useEffect(() => {
         if (loading || error || !eventDetail) return;
+        function cssVarToHex(varName: string) {
+            let v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+            if (v.startsWith('#')) return v;
+            const m = v.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+            if (!m) return v; // вдруг уже валидное значение
+            const toHex = (n: string) => Number(n).toString(16).padStart(2, '0');
+            return `#${toHex(m[1])}${toHex(m[2])}${toHex(m[3])}`;
+        }
+        const hexColor = cssVarToHex('--tg-theme-bg-color');
+
 
         if (eventDetail?.event.is_creator) {
             if (!secondaryButton.isMounted()) {
@@ -383,12 +425,16 @@ export default function EventDetail() {
                 if (isFinalizedEvent && finalSlot) {
                     secondaryButton.setParams({
                         text: t('unfinalizePollButton'),
+                        //@ts-ignore
+                        backgroundColor: hexColor,
                         isVisible: true,
                         isEnabled: true,
                     });
                 } else {
                     secondaryButton.setParams({
                         text: t('editEventButton'),
+                        //@ts-ignore
+                        backgroundColor: hexColor,
                         isVisible: true,
                         isEnabled: true,
                     });
@@ -544,6 +590,45 @@ export default function EventDetail() {
         }
     };
 
+    const rawLoc = eventDetail.event.location?.trim() ?? '';
+
+    const ensureHref = (s: string): string | null => {
+        if (!s) return null;
+        if (/^https?:\/\//i.test(s)) return s;
+        if (/^[\w.-]+\.[a-z]{2,}/i.test(s)) return `https://${s}`;
+        return null;
+    };
+
+    const trimMiddle = (s: string, max = 40) =>
+        s.length <= max ? s : s.slice(0, Math.ceil((max - 1) / 2)) + '…' + s.slice(s.length - Math.floor((max - 1) / 2));
+
+    const displayText = (href: string, max = 40) => {
+        try {
+            const u = new URL(href);
+            const host = u.hostname.replace(/^www\./i, '');
+            // оставим только домен + путь, без query/hash
+            const base = `${host}${u.pathname}`.replace(/\/$/, '');
+            return trimMiddle(base || host, max);
+        } catch {
+            return trimMiddle(href, max);
+        }
+    };
+
+    const href = ensureHref(rawLoc);
+    const label = href ? displayText(href, 42) : rawLoc;
+
+    const handleAddToCalendar = () => {
+        const params = new URLSearchParams({
+            title: eventDetail.event.title,
+            startTime: finalSlot?.slot_start || '',
+            language_code: languageCode || 'en',
+            ...(eventDetail.event.description && { description: eventDetail.event.description }),
+            ...(eventDetail.event.location && { location: eventDetail.event.location })
+        });
+
+        const calendarUrl = `${window.location.origin}/calendar.html?${params.toString()}`;
+        openLink(calendarUrl);
+    };
 
     return (
         <div className="bg-tg-bg text-tg-text p-4 relative">
@@ -607,6 +692,28 @@ export default function EventDetail() {
                             {eventDetail.event.description}
                         </p>
                     )}
+                    {eventDetail.event.location && (
+                        <div className="mt-2">
+                            <div className="flex items-start gap-2">
+                                <span className="text-sm text-tg-hint">{t('eventLocation')}:</span>
+                                <span className="text-sm text-tg-text flex-1 min-w-0 break-words whitespace-pre-line">
+                                    {href ? (
+                                        <a
+                                            href={href}
+                                            title={rawLoc}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-tg-link break-words max-w-full truncate"
+                                        >
+                                            {label}
+                                        </a>
+                                    ) : (
+                                        label
+                                    )}
+                                </span>
+                            </div>
+                        </div>
+                    )}
                 </div>
                 <div>
                     {!isFinalizedEvent && !finalSlot && (
@@ -655,6 +762,9 @@ export default function EventDetail() {
                                             {t('titleParticipants')}: {finalSlot.vote_count}
                                         </div>
                                     )}
+                                </div>
+                                <div className='flex w-full items-center justify-center'>
+                                    <button className='bg-tg-button text-tg-buttonText rounded-[8px] w-full py-3' onClick={handleAddToCalendar}>{t('addToCalendarButton')}</button>
                                 </div>
                             </div>
                         ) : (
@@ -890,6 +1000,64 @@ export default function EventDetail() {
                 eventDetail={eventDetail}
                 showEventTimezone={showEventTimezone}
             />
+            {showLocationModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-tg-bg rounded-[8px] p-4 w-full max-w-md">
+                        <h3 className="font-semibold text-tg-text mb-3">{t('addLocationOnFinalize')}</h3>
+                        <input
+                            type="text"
+                            className="w-full p-2 rounded-[8px] bg-tg-secondaryBg text-tg-text placeholder:text-tg-hint focus-input mb-4"
+                            placeholder={t('eventLocationPlaceholder')}
+                            value={tempLocation}
+                            onChange={(e) => setTempLocation(e.target.value)}
+                        />
+                        <div className="flex space-x-2">
+                            <button
+                                onClick={() => {
+                                    setShowLocationModal(false);
+                                    setPendingFinalizeSlot(null);
+                                }}
+                                className="flex-1 py-2 bg-tg-secondaryBg text-tg-text rounded-[8px]"
+                            >
+                                {t('editPageCancel')}
+                            </button>
+                            <button
+                                onClick={async () => {
+                                    setShowLocationModal(false);
+
+                                    if (pendingFinalizeSlot) {
+                                        const slotId = pendingFinalizeSlot; // сохраняем id слота до сброса стейтов
+
+                                        const ok = await finalizedPoll(
+                                            eventDetail!.event.id,
+                                            slotId,
+                                            tempLocation || undefined
+                                        );
+
+                                        if (ok) {
+                                            await showAlert(t('eventFinalizedSuccessfully'));
+
+                                            setFinalizedSlot(null);
+                                            setPendingFinalizeSlot(null);
+
+                                            setEvent(prev => produce(prev, draft => {
+                                                if (!draft) return;
+                                                draft.event.final_slot_id = slotId;
+                                                if (tempLocation) draft.event.location = tempLocation;
+                                            }));
+                                        } else {
+                                            await showAlert(t('errorFinalizedEvent'));
+                                        }
+                                    }
+                                }}
+                                className="flex-1 py-2 bg-tg-button text-tg-buttonText rounded-[8px]"
+                            >
+                                {t('finalizePollButton')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

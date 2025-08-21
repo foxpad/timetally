@@ -9,10 +9,13 @@
   "dependencies": {
     "@telegram-apps/sdk-react": "^3.3.6",
     "@telegram-apps/telegram-ui": "^2.1.9",
+    "add-to-calendar-button": "^2.9.1",
+    "add-to-calendar-button-react": "^2.9.1",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "dotenv": "^17.2.1",
     "framer-motion": "^12.23.7",
+    "immer": "^10.1.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.6.3",

@@ -3,11 +3,236 @@ import { useLanguage } from "../context/LanguageContext";
 import Header from "../components/Header";
 import { BackButton } from "../components/BackButton";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, QuestionIcon, ResetAllIcon, TrashIcon } from "../components/Icons";
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, QuestionIcon, ResetAllIcon, TrashIcon, TemplateIcon, CloseIcon } from "../components/Icons";
 import { useNavigate } from "react-router-dom";
 import { createEvent } from "../api/eventApi";
 import { Tooltip } from 'react-tooltip';
 import { TimeField } from "../components/TimeField";
+import { showAlert, showConfirm, showPopup } from '../lib/telegramPopup';
+
+
+// Интерфейс для слота с уникальным ID
+interface TimeSlotWithId {
+  id: string; // Уникальный идентификатор для React key
+  time: string;
+  originalIndex: number; // Оригинальный порядок для сортировки
+}
+
+// Интерфейс для шаблона
+interface TimeTemplate {
+  startTime: string;
+  endTime: string;
+  repeatInterval: number; // интервал повторения в минутах
+}
+
+const ModalCustomCheckbox = ({
+  checked,
+  onChange,
+  label
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+}) => {
+  return (
+    <label className="flex items-center justify-between space-x-2 cursor-pointer">
+      <span className="text-sm font-semibold text-tg-text">{label}</span>
+      <input
+        type="checkbox"
+        className="sr-only"
+        checked={checked}
+        onChange={() => onChange(!checked)}
+      />
+      <div
+        className={`flex items-center justify-center w-6 h-6 border-2 rounded-[8px] transition-colors ${checked
+          ? 'border-tg-button bg-tg-button'
+          : 'border-tg-hint bg-tg-secondaryBg'
+          }`}
+      >
+        {checked && (
+          <CheckIcon className="w-4 h-4 text-tg-buttonText" />
+        )}
+      </div>
+    </label>
+  );
+};
+
+// Компонент модального окна для шаблонов
+const TemplateModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  onApply: (template: TimeTemplate, applyToAll: boolean, targetDate?: string) => void;
+  targetDate?: string;
+}> = ({ isOpen, onClose, onApply, targetDate }) => {
+  const { t } = useLanguage();
+  const [startTime, setStartTime] = useState('09:00');
+  const [endTime, setEndTime] = useState('17:00');
+  const [repeatInterval, setRepeatInterval] = useState(60);
+  const [applyToAll, setApplyToAll] = useState(false);
+
+  const LaunchParams = retrieveLaunchParams();
+  const language_code = LaunchParams.tgWebAppData?.user?.language_code || 'en';
+
+  // Опции для интервалов повтора
+  const repeatOptions = [
+    { value: 15, label: language_code === 'ru' ? '15 мин' : '15 min' },
+    { value: 30, label: language_code === 'ru' ? '30 мин' : '30 min' },
+    { value: 60, label: language_code === 'ru' ? '60 мин' : '60 min' },
+    { value: 90, label: language_code === 'ru' ? '90 мин' : '90 min' },
+    { value: 120, label: language_code === 'ru' ? '2 часа' : '2 hours' },
+  ];
+
+  const handleApply = async () => {
+    if (startTime >= endTime) {
+      const errorMsg = language_code === 'ru'
+        ? 'Время начала должно быть меньше времени окончания'
+        : 'Start time must be before end time';
+      await showAlert(errorMsg);
+      return;
+    }
+
+    onApply({
+      startTime,
+      endTime,
+      repeatInterval
+    }, applyToAll, targetDate);
+
+    onClose();
+  };
+
+  const formatDate = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      const day = date.getDate();
+      const weekday = date.toLocaleDateString(language_code || 'en', { weekday: 'short' });
+
+      if ((language_code || 'en').startsWith('ru')) {
+        const monthsGenitive = [
+          'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+          'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+        ];
+        const month = monthsGenitive[date.getMonth()];
+        return `${day} ${month}, ${weekday}`;
+      } else {
+        const month = date.toLocaleDateString(language_code, { month: 'long' });
+        return `${month} ${day}, ${weekday}`;
+      }
+    } catch {
+      return dateString;
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-tg-bg rounded-[8px] w-full max-w-md pt-1">
+        {/* Header */}
+        <div className="flex items-center justify-between py-2 px-4 border-b border-tg-secondaryBg">
+          <div className="flex items-center">
+            <div className="p-1 mr-3 flex items-center justify-center">
+              <TemplateIcon className='w-5 h-5 mt-1.5' />
+            </div>
+            <h3 className="text-lg font-semibold text-tg-text">
+              {language_code === 'ru' ? 'Шаблон времени' : 'Time template'}
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-tg-secondaryBg text-tg-hint"
+          >
+            <CloseIcon className='w-5 h-5' />
+          </button>
+        </div>
+
+        <div className="px-4 py-2 space-y-2 mb-2">
+          {/* Description */}
+          <p className="px-2 text-sm text-tg-hint">
+            {language_code === 'ru'
+              ? 'Добавьте несколько временных слотов сразу, заполнив шаблон ниже.'
+              : 'Add multiple times at once by filling out the template below.'}
+          </p>
+
+          {/* Target date info */}
+          {targetDate && (
+            <div>
+              <label className="px-2 block text-sm font-semibold text-tg-text">
+                {language_code === 'ru' ? 'Для даты: ' : 'For date: '}
+              </label>
+              <div className="text-sm mt-2 text-tg-text bg-tg-secondaryBg rounded-[8px] p-2">
+                <span className="font-medium">{formatDate(targetDate)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Repeat interval */}
+          <div>
+            <label className="px-2 block text-sm font-semibold text-tg-text mb-2">
+              {language_code === 'ru' ? 'Повторять каждые' : 'Repeat every'}
+            </label>
+            <select
+              value={repeatInterval}
+              onChange={(e) => setRepeatInterval(Number(e.target.value))}
+              className="w-full p-2 text-sm bg-tg-secondaryBg text-tg-text rounded-[8px] border-none focus:outline-none focus:ring-2 focus:ring-tg-button"
+            >
+              {repeatOptions.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Time range */}
+          <div className="flex justify-between space-x-4">
+            <div className='flex-1'>
+              <label className="px-2 text-sm block font-semibold text-tg-text mb-2">
+                {language_code === 'ru' ? 'От' : 'From'}
+              </label>
+              <TimeField
+                value={startTime}
+                onChange={setStartTime}
+              />
+            </div>
+            <div className='flex-1'>
+              <label className="px-2 text-sm block font-semibold text-tg-text mb-2">
+                {language_code === 'ru' ? 'До' : 'To'}
+              </label>
+              <TimeField
+                value={endTime}
+                onChange={setEndTime}
+              />
+            </div>
+          </div>
+          {/* Apply to all dates toggle */}
+          <div className="px-2 pt-2">
+            <ModalCustomCheckbox
+              checked={applyToAll}
+              onChange={setApplyToAll}
+              label={language_code === 'ru' ? 'Применить ко всем датам' : 'Add to all dates'}
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex justify-between space-x-2 px-4 py-2 border-t border-tg-secondaryBg w-full">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 text-tg-text hover:bg-tg-secondaryBg rounded-[8px] transition-colors"
+          >
+            {language_code === 'ru' ? 'Отменить' : 'Cancel'}
+          </button>
+          <button
+            onClick={handleApply}
+            className="flex-1 px-4 py-2 bg-tg-button text-tg-buttonText rounded-[8px]"
+          >
+            {language_code === 'ru' ? 'Применить' : 'Apply'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const Calendar: React.FC<{
   selectedDates: Date[];
@@ -174,8 +399,18 @@ export default function CreateEvent() {
   const locale = LaunchParams.tgWebAppData?.user?.language_code === 'ru' ? 'ru-RU' : 'en-US';
   const [selectedDates, setSelectedDates] = useState<Date[]>([]);
   const [eventTitle, setEventTitle] = useState('');
-  const [timeSlots, setTimeSlots] = useState<Record<string, string[]>>({});
+  const [eventLocation, setEventLocation] = useState('');
+
+
+  // Изменяем структуру timeSlots для использования уникальных ID
+  const [timeSlots, setTimeSlots] = useState<Record<string, TimeSlotWithId[]>>({});
   const [isChecked, setIsChecked] = useState(false);
+  const [eventType, setEventType] = useState<'poll' | 'booking'>('poll');
+
+  // Состояние для модального окна шаблона
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [templateTargetDate, setTemplateTargetDate] = useState<string | undefined>(undefined);
+
   const totalSlotsCount = Object.values(timeSlots).reduce((sum, slots) => sum + slots.length, 0);
   const { t } = useLanguage();
 
@@ -184,7 +419,26 @@ export default function CreateEvent() {
     navigate('/');
   };
 
+  // Создаем версию timeSlots для отображения (с сортировкой)
+  const displayTimeSlots = useMemo(() => {
+    const sortedSlots: Record<string, TimeSlotWithId[]> = {};
+
+    Object.entries(timeSlots).forEach(([dateKey, slots]) => {
+      // Создаем отсортированную копию слотов для отображения
+      sortedSlots[dateKey] = [...slots].sort((a, b) => {
+        const timeToMinutes = (time: string) => {
+          const [hours, minutes] = time.split(':').map(Number);
+          return hours * 60 + minutes;
+        };
+        return timeToMinutes(a.time) - timeToMinutes(b.time);
+      });
+    });
+
+    return sortedSlots;
+  }, [timeSlots]);
+
   const isFormValid = eventTitle.trim() !== '' && totalSlotsCount > 1;
+
   const handleSubmit = async () => {
     if (isFormValid) {
       try {
@@ -194,12 +448,12 @@ export default function CreateEvent() {
           const dateStr = date.toDateString();
           return (
             timeSlots[dateStr] &&
-            timeSlots[dateStr].some(slot => slot?.trim() !== "")
+            timeSlots[dateStr].some(slot => slot?.time?.trim() !== "")
           );
         });
 
         if (validDates.length === 0) {
-          window.alert(t('formNotDate'));
+          await showAlert(t('formNotDate'));
           return;
         }
 
@@ -210,8 +464,8 @@ export default function CreateEvent() {
             cleanedTimeSlots[dateStr] = [
               ...new Set(
                 timeSlots[dateStr]
-                  .filter(slot => slot?.trim() !== "")
-                  .map(slot => slot.trim())
+                  .filter(slot => slot?.time?.trim() !== "")
+                  .map(slot => slot.time.trim())
               )
             ];
           }
@@ -222,12 +476,14 @@ export default function CreateEvent() {
         );
 
         if (!hasValidSlots) {
-          window.alert(t('formNotDate'));
+          await showAlert(t('formNotDate'));
           return;
         }
+
         const eventData = {
           title: eventTitle.trim(),
           description: (document.querySelector('textarea[name="eventDescription"]') as HTMLTextAreaElement)?.value || '',
+          location: eventLocation.trim() || '',
           dates: selectedDates.map(date => ({
             date: date.toISOString(),
             timeSlots: cleanedTimeSlots[date.toDateString()] || []
@@ -236,27 +492,28 @@ export default function CreateEvent() {
           timezone: userTimezone,
           eventType: eventType
         };
+
         const response = await createEvent(eventData);
 
         if (response) {
           const event_id = response.event?.id;
           navigate(`/event/${event_id}`);
         } else {
-          window.alert('Ошибка! создания!');
+          await showAlert('Ошибка! создания!');
         };
       } catch (error) {
-        window.alert('Ошибка работы скрипта!');
+        await showAlert('Ошибка работы скрипта!');
         console.error('Error creating events:', error);
       }
     } else {
       if (totalSlotsCount <= 0) {
         if (eventTitle.trim() === '') {
-          window.alert(t('formNotTitleDate'));
+          await showAlert(t('formNotTitleDate'));
         } else {
-          window.alert(t('formNotDate'));
+          await showAlert(t('formNotDate'));
         };
       } else {
-        window.alert(t('formNotTitle'));
+        await showAlert(t('formNotTitle'));
       };
     };
   };
@@ -282,8 +539,6 @@ export default function CreateEvent() {
     };
   }, [isFormValid, eventTitle, selectedDates, timeSlots, isChecked, locale]);
 
-
-
   const handleDateSelect = (date: Date) => {
     setSelectedDates(prev => {
       const dateString = date.toDateString();
@@ -305,22 +560,35 @@ export default function CreateEvent() {
             defaultTime = `${hours}:${minutes}`;
           };
         };
+
         setTimeSlots(prevSlots => ({
           ...prevSlots,
-          [dateString]: [defaultTime]
+          [dateString]: [{
+            id: `slot-${Date.now()}`, // Уникальный ID
+            time: defaultTime,
+            originalIndex: 0
+          }]
         }));
         return [...prev, date].sort((a, b) => a.getTime() - b.getTime());
       }
     });
   };
 
-  const handleTimeChange = (dateString: string, index: number, value: string) => {
+  // Улучшенная функция изменения времени с проверкой границ и без потери фокуса
+  const updateSlotTime = useCallback((dateString: string, slotId: string, newTime: string) => {
     const now = new Date();
     const slotDate = new Date(dateString);
 
+    // Проверка границ времени (0:00 - 23:59)
+    const [hours, minutes] = newTime.split(':').map(Number);
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      return; // Не обновляем если время выходит за границы
+    }
+
+    let validatedTime = newTime;
+
     // Если дата сегодняшняя, корректируем время
     if (slotDate.toDateString() === now.toDateString()) {
-      const [hours, minutes] = value.split(':').map(Number);
       const selectedTime = new Date();
       selectedTime.setHours(hours, minutes, 0, 0);
 
@@ -329,33 +597,49 @@ export default function CreateEvent() {
         const correctedTime = new Date(now.getTime() + 15 * 60000); // +15 минут
         const correctedHours = String(correctedTime.getHours()).padStart(2, '0');
         const correctedMinutes = String(correctedTime.getMinutes()).padStart(2, '0');
-        value = `${correctedHours}:${correctedMinutes}`;
+        validatedTime = `${correctedHours}:${correctedMinutes}`;
       };
     };
 
-    setTimeSlots(prev => {
-      const newTimes = [...(prev[dateString] || [])];
-      newTimes[index] = value;
-      return { ...prev, [dateString]: newTimes };
-    });
-  };
+    setTimeSlots(prev => ({
+      ...prev,
+      [dateString]: prev[dateString].map(slot =>
+        slot.id === slotId ? { ...slot, time: validatedTime } : slot
+      )
+    }));
+  }, []);
 
   const addTimeSlot = (dateString: string) => {
-
     const existingSlots = timeSlots[dateString] || [];
     let newTime = '12:00'; // значение по умолчанию
 
     if (existingSlots.length > 0) {
-      // Берем последний временной слот
-      const lastTime = existingSlots[existingSlots.length - 1];
+      // Берем последний временной слот по времени (не по индексу)
+      const sortedSlots = [...existingSlots].sort((a, b) => {
+        const timeToMinutes = (time: string) => {
+          const [hours, minutes] = time.split(':').map(Number);
+          return hours * 60 + minutes;
+        };
+        return timeToMinutes(a.time) - timeToMinutes(b.time);
+      });
+
+      const lastTime = sortedSlots[sortedSlots.length - 1].time;
       const [hours, minutes] = lastTime.split(':').map(Number);
 
       // Добавляем 1 час к последнему времени
       let newHours = hours + 1;
       let newMinutes = minutes;
 
+      // Проверяем, не выходим ли за 24 часа
+      if (newHours >= 24) {
+        newHours = 23;
+        newMinutes = 59;
+      }
+
       // Проверяем, существует ли уже такое время
-      const timeExists = existingSlots.some(time => time === `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}`);
+      const timeExists = existingSlots.some(slot =>
+        slot.time === `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}`
+      );
 
       // Если время существует, добавляем 15 минут
       if (timeExists) {
@@ -363,6 +647,12 @@ export default function CreateEvent() {
         if (newMinutes >= 60) {
           newMinutes -= 60;
           newHours += 1;
+        }
+
+        // Повторная проверка на выход за 24 часа
+        if (newHours >= 24) {
+          newHours = 23;
+          newMinutes = 59;
         }
       }
 
@@ -382,13 +672,20 @@ export default function CreateEvent() {
 
     setTimeSlots(prev => ({
       ...prev,
-      [dateString]: [...(prev[dateString] || []), newTime]
+      [dateString]: [
+        ...(prev[dateString] || []),
+        {
+          id: `slot-${Date.now()}-${Math.random()}`, // Уникальный ID
+          time: newTime,
+          originalIndex: (prev[dateString]?.length || 0)
+        }
+      ]
     }));
   };
 
-  const removeTimeSlot = useCallback((dateString: string, index: number) => {
+  const removeTimeSlot = useCallback((dateString: string, slotId: string) => {
     setTimeSlots(prev => {
-      const updatedSlots = prev[dateString].filter((_, i) => i !== index);
+      const updatedSlots = prev[dateString].filter(slot => slot.id !== slotId);
       if (updatedSlots.length === 0) {
         const { [dateString]: _, ...rest } = prev;
         setSelectedDates(prevDates =>
@@ -403,12 +700,77 @@ export default function CreateEvent() {
     });
   }, []);
 
-  const removeAllDatesAndSlots = () => {
-
-    if (window.confirm(t('confirmDeleteAllSlots'))) {
+  const removeAllDatesAndSlots = async () => {
+    const ok = await showConfirm(t('confirmDeleteAllSlots'));
+    if (ok) {
       setSelectedDates([]);
       setTimeSlots({});
     };
+  };
+
+  // Функция применения шаблона
+  const applyTimeTemplate = useCallback((template: TimeTemplate, applyToAll: boolean, targetDate?: string) => {
+    const generateSlotsFromTemplate = (template: TimeTemplate) => {
+      const slots: TimeSlotWithId[] = [];
+      const startDate = new Date(`2024-01-01 ${template.startTime}`);
+      const endDate = new Date(`2024-01-01 ${template.endTime}`);
+
+      let current = new Date(startDate);
+      let index = 0;
+
+      while (current < endDate) {
+        slots.push({
+          id: `template-${Date.now()}-${index}`,
+          time: current.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          originalIndex: index
+        });
+        current.setMinutes(current.getMinutes() + template.repeatInterval);
+        index++;
+      }
+
+      return slots;
+    };
+
+    const newSlots = generateSlotsFromTemplate(template);
+
+    if (applyToAll) {
+      // Применяем ко всем выбранным датам
+      setTimeSlots(prev => {
+        const updated = { ...prev };
+        selectedDates.forEach(date => {
+          const dateString = date.toDateString();
+          const existingSlots = prev[dateString] || [];
+
+          // Фильтруем новые слоты, оставляя только те, которых нет в существующих
+          const uniqueNewSlots = newSlots.filter(newSlot =>
+            !existingSlots.some(existingSlot => existingSlot.time === newSlot.time)
+          );
+
+          updated[dateString] = [...existingSlots, ...uniqueNewSlots];
+        });
+        return updated;
+      });
+    } else if (targetDate) {
+      // Применяем только к выбранной дате
+      setTimeSlots(prev => {
+        const existingSlots = prev[targetDate] || [];
+
+        // Фильтруем новые слоты, оставляя только те, которых нет в существующих
+        const uniqueNewSlots = newSlots.filter(newSlot =>
+          !existingSlots.some(existingSlot => existingSlot.time === newSlot.time)
+        );
+
+        return {
+          ...prev,
+          [targetDate]: [...existingSlots, ...uniqueNewSlots]
+        };
+      });
+    }
+  }, [selectedDates]);
+
+  const openTemplateModal = (dateString?: string) => {
+    setTemplateTargetDate(dateString);
+    setIsTemplateModalOpen(true);
   };
 
   const useFormattedDate = (date: Date, locale: string) => {
@@ -439,8 +801,6 @@ export default function CreateEvent() {
     );
   };
 
-
-  const [eventType, setEventType] = useState<'poll' | 'booking'>('poll');
   const changeEventType = (newType: 'poll' | 'booking') => {
     setEventType(newType);
     setIsChecked(false);
@@ -455,6 +815,14 @@ export default function CreateEvent() {
           <input type="text" name="eventTitle" className="block w-full text-tg-text border-solid placeholder:text-tg-hint p-2 rounded-[8px] bg-tg-secondaryBg focus-input"
             placeholder={t('eventTitle')} onChange={(e) => setEventTitle(e.target.value)} required />
           <textarea name="eventDescription" className="block w-full text-tg-text placeholder:text-tg-hint p-2 rounded-[8px] bg-tg-secondaryBg focus-input" id="" placeholder={t('eventDescription')} rows={3}></textarea>
+          <input
+            type="text"
+            name="eventLocation"
+            className="block w-full text-tg-text border-solid placeholder:text-tg-hint p-2 rounded-[8px] bg-tg-secondaryBg focus-input"
+            placeholder={t('eventLocationPlaceholder')}
+            value={eventLocation}
+            onChange={(e) => setEventLocation(e.target.value)}
+          />
         </div>
         <div className="flex items-center justify-between mb-4 ">
           <div className="flex items-center">
@@ -495,16 +863,29 @@ export default function CreateEvent() {
               </div>
               {selectedDates.map(date => (
                 <div key={date.toDateString()} className=" text-tg-buttonText">
-                  <h4 className="px-2 font-semibold text-tg-text">{useFormattedDate(date, locale)}</h4>
+                  <div className='flex items-center justify-between pr-11'>
+                    <h4 className="px-2 font-semibold text-tg-text">{useFormattedDate(date, locale)}</h4>
+                    <button
+                      onClick={() => openTemplateModal(date.toDateString())}
+                      className='flex px-2 text-tg-accent text-sm font-semibold mt-2'
+                    >
+                      {t('templateButton')}
+                    </button>
+                  </div>
                   <div className="space-y-2">
-                    {(timeSlots[date.toDateString()] || []).map((time, index) => (
-                      <div key={index} className="flex items-center space-x-2 mt-2">
+                    {(displayTimeSlots[date.toDateString()] || []).map((slot) => (
+                      <div key={slot.id} className="flex items-center space-x-2 mt-2">
                         <TimeField
-                          value={time}
+                          value={slot.time}
                           min={isToday(date) ? getCurrentTimeString() : undefined}
-                          onChange={(v) => handleTimeChange(date.toDateString(), index, v)}
+                          onChange={(newTime) => updateSlotTime(date.toDateString(), slot.id, newTime)}
                         />
-                        <button onClick={() => removeTimeSlot(date.toDateString(), index)} className="p-2 text-tg-destructive rounded-[8px] hover:bg-tg-secondaryBg"><TrashIcon className="w-5 h-5" /></button>
+                        <button
+                          onClick={() => removeTimeSlot(date.toDateString(), slot.id)}
+                          className="p-2 text-tg-destructive rounded-[8px] hover:bg-tg-secondaryBg"
+                        >
+                          <TrashIcon className="w-5 h-5" />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -523,6 +904,14 @@ export default function CreateEvent() {
           />
         </div>
       </div>
+
+      {/* Модальное окно шаблона */}
+      <TemplateModal
+        isOpen={isTemplateModalOpen}
+        onClose={() => setIsTemplateModalOpen(false)}
+        onApply={applyTimeTemplate}
+        targetDate={templateTargetDate}
+      />
     </div>
   );
 }

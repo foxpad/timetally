@@ -9,6 +9,7 @@ interface TimeSlots {
 interface EventDataCreate {
   title: string;
   description?: string;
+  location?: string;
   dates: TimeSlots[];
   allowMultipleChoice: boolean;
   timezone: string;
@@ -31,6 +32,7 @@ interface EventDataUpdate {
     public_id: string;
     title: string;
     description: string | null;
+    location: string | null;
   };
   slots: Array<{
     id?: number;
@@ -59,9 +61,12 @@ export const submitVotes = async (voteData: VoteData) => {
   }
 };
 
-export const finalizedPoll = async (eventId: number, slotId: number) => {
+export const finalizedPoll = async (eventId: number, slotId: number, location?: string) => {
   try {
-    const response = await request(`events/${eventId}/finalized`, "POST", { slot_id: slotId });
+    const response = await request(`events/${eventId}/finalized`, "POST", { 
+      slot_id: slotId,
+      location: location 
+    });
     return response;
   } catch (error) {
     console.error("Error finalizing poll:", error);

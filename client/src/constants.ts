@@ -71,7 +71,14 @@ export const translations = {
     "localTime": "My Time",
     "eventTime": "Event Time",
     "switchToLocalTime": "Switch to local time",
-    "switchToEventTime": "Switch to event time"
+    "switchToEventTime": "Switch to event time",
+    'templateButton': 'Template',
+
+    'eventLocation': 'Location',
+    'eventLocationPlaceholder': 'Address, Zoom/Meet link, or other location',
+    'addLocationOnFinalize': 'Add meeting location',
+    'locationAdded': 'Location added',
+    'addToCalendarButton': 'Add to Calendar',
   },
   ru: {
     // Create Event
@@ -144,6 +151,13 @@ export const translations = {
     "localTime": "Моё время",
     "eventTime": "Время события",
     "switchToLocalTime": "Переключить на мое время",
-    "switchToEventTime": "Переключить на время события"
+    "switchToEventTime": "Переключить на время события",
+    'templateButton': 'Шаблон',
+
+    'eventLocation': 'Место встречи',
+    'eventLocationPlaceholder': 'Адрес, ссылка на Zoom/Meet или другая локация',
+    'addLocationOnFinalize': 'Добавить место встречи',
+    'locationAdded': 'Место встречи добавлено',
+    'addToCalendarButton': 'Добавить в календарь',
   }
 };

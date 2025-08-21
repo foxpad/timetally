@@ -43,6 +43,7 @@ export interface EventDetails {
   public_id: string;
   title: string;
   description: string | null;
+  location: string | null; 
   timezone: string;
   event_type: 'poll' | 'booking';
   multiple_choice: boolean;

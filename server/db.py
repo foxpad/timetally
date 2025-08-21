@@ -72,6 +72,11 @@ async def create_tables(conn: asyncpg.Connection):
         """)
 
         await conn.execute("""
+            ALTER TABLE events
+            ADD COLUMN IF NOT EXISTS location TEXT;
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS event_slots (
                 id SERIAL PRIMARY KEY,
                 event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
@@ -352,8 +357,8 @@ async def create_event(conn: asyncpg.Connection, event_data: EventCreate, telegr
             event = await conn.fetchrow(
                 """
                 INSERT INTO events 
-                (user_id, title, description, timezone, event_type, multiple_choice, public_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (user_id, title, description, timezone, event_type, multiple_choice, public_id, location)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING *
                 """,
                 user_data['id'],
@@ -362,7 +367,7 @@ async def create_event(conn: asyncpg.Connection, event_data: EventCreate, telegr
                 event_data.timezone,
                 event_data.event_type,
                 event_data.allow_multiple_choice,
-                public_id
+                public_id, event_data.location
             )
 
             slot_values = []
@@ -530,6 +535,7 @@ async def get_event_details_db(conn: asyncpg.Connection, telegram_user_id: int, 
                 e.public_id,
                 e.title,
                 e.description,
+                e.location,
                 e.timezone,
                 e.event_type,
                 e.multiple_choice,
@@ -684,7 +690,7 @@ async def get_event_by_id(conn: asyncpg.Connection, event_id: int, user_id: int)
     """Получение события по ID с проверкой прав доступа"""
     # Получаем данные события
     event_query = """
-        SELECT e.id, e.public_id, e.title, e.description, e.event_type, 
+        SELECT e.id, e.public_id, e.title, e.description, e.location, e.event_type, 
                CASE WHEN e.multiple_choice THEN true ELSE false END as multiple_choice,
                e.timezone, e.created_at, e.updated_at, e.user_id, e.final_slot_id, 
                ($2::BIGINT = u.telegram_user_id) AS is_creator,
@@ -749,6 +755,7 @@ async def get_event_by_id(conn: asyncpg.Connection, event_id: int, user_id: int)
         public_id=event_row['public_id'],
         title=event_row['title'],
         description=event_row['description'],
+        location=event_row['location'],
         timezone=event_row['timezone'],
         event_type=event_row['event_type'],
         multiple_choice=event_row['multiple_choice'],
@@ -820,8 +827,8 @@ async def update_event_data(conn: asyncpg.Connection, event_update: EventUpdate,
         # 1. Обновляем основные данные события
         update_event_query = """
             UPDATE events 
-            SET title = $1, description = $2, updated_at = NOW()
-            WHERE id = $3 AND deleted_at IS NULL
+            SET title = $1, description = $2, location = $3, updated_at = NOW()
+            WHERE id = $4 AND deleted_at IS NULL
             RETURNING id
         """
 
@@ -829,6 +836,7 @@ async def update_event_data(conn: asyncpg.Connection, event_update: EventUpdate,
             update_event_query,
             event_update.event.title,
             event_update.event.description,
+            event_update.event.location,
             event_update.event.id
         )
 
@@ -1033,6 +1041,25 @@ async def submit_votes_db(conn: asyncpg.Connection, event_id: int, telegram_user
         "creator_language_code": (row["creator_language_code"] or "en"),  # ⬅️ сразу доступен
         "voter_telegram_user_id": row["voter_telegram_user_id"],
     }
+
+
+async def update_event_location_on_finalize(
+    conn: asyncpg.Connection,
+    event_id: int,
+    location: Optional[str]
+) -> bool:
+    """Обновляет локацию события при финализации"""
+    if location:
+        result = await conn.execute(
+            """
+            UPDATE events
+            SET location = $2, updated_at = NOW()
+            WHERE id = $1 AND deleted_at IS NULL
+            """,
+            event_id, location
+        )
+        return result == "UPDATE 1"
+    return True
 
 
 async def finalized_event_db(

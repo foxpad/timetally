@@ -14,7 +14,7 @@ class WebAppUser(BaseModel):
     language_code: Optional[str] = None
     is_premium: bool = False
     allows_write_to_pm: bool = True
-    photo_url: Optional[str] = None
+    photo_url: Optional[str] = None 
 
 
 class BotUser(BaseModel):
@@ -59,6 +59,11 @@ class EventDateResponse(BaseModel):
 class EventCreateBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=500)
+    location: Optional[str] = Field(
+        None,
+        max_length=500,
+        description="Адрес, ссылка на Zoom/Meet или другая локация"
+    )
     timezone: str = Field(
         default="UTC",
         pattern=r"^[A-Za-z_]+/[A-Za-z_]+$",  # Пример: "Europe/Moscow"
@@ -152,6 +157,7 @@ class EventDetailsResponse(PublicIdSerializerMixin):
     id: int
     title: str
     description: Optional[str] = None
+    location: Optional[str] = None
     timezone: str
     event_type: Literal['poll', 'booking']
     multiple_choice: bool
@@ -181,6 +187,11 @@ class EventUpdateData(PublicIdSerializerMixin):
     id: int = Field(..., description="ID события")
     title: str = Field(..., min_length=1, max_length=200, description="Заголовок события")
     description: Optional[str] = Field(None, max_length=1000, description="Описание события")
+    location: Optional[str] = Field(
+        None,
+        max_length=1000,
+        description="Локация события"
+    )
 
     @field_validator('title')
     @classmethod
@@ -192,6 +203,14 @@ class EventUpdateData(PublicIdSerializerMixin):
     @field_validator('description')
     @classmethod
     def clean_description(cls, v):
+        if v is not None:
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator('location')
+    @classmethod
+    def clean_location(cls, v):
         if v is not None:
             v = v.strip()
             return v if v else None

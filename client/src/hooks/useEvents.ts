@@ -68,7 +68,7 @@ export function useEvent(eventId?: number, eventPublicId?: string) {
     loadEvent();
   }, [eventId]);
 
-  return { eventDetail, loading, error };
+  return { eventDetail, loading, error, setEvent };
 }
 
 function transformEventDates(data: any): EventFullResponse {

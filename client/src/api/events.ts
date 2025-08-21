@@ -18,7 +18,7 @@ export async function fetchEventDetail(eventId?: number, eventPublicId?: string)
 }
 
 export async function fetchEventDelete(eventId: number): Promise<void> {
-  return request(`events/${eventId}/delete`, 'POST');
+  return request(`events/${eventId}/delete`, 'DELETE');
 }
 
 export async function fetchUnfinalizeEvent(eventId: number): Promise<void> {

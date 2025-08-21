@@ -1,4 +1,4 @@
-const DEFAULT_RUL = import.meta.env.VITE_DEFAULT_URL;
+const DEFAULT_URL = import.meta.env.VITE_DEFAULT_URL;
 
 // @ts-ignore
 const tg = window.Telegram.WebApp;
@@ -19,7 +19,7 @@ async function request(endpoint: string, method: string = "GET", data?: any) {
         body: typeof data === 'string' ? data : JSON.stringify(data)
     }
 
-    const response = await fetch(`${DEFAULT_RUL}/api/${endpoint}`, options);
+    const response = await fetch(`${DEFAULT_URL}/api/${endpoint}`, options);
     const jsonData = await response.json();
 
      if (!response.ok) {

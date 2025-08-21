@@ -1,11 +1,18 @@
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Union
 import asyncpg
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from aiogram.utils.web_app import safe_parse_webapp_init_data
+
+from pydantic import BaseModel
+from pathlib import Path
+from datetime import datetime, timezone
+import tempfile
+from typing import Optional
 
 import uvicorn
 import os
@@ -22,7 +29,7 @@ from bot_notifications import send_event_created_pm, send_event_deleted_pm, send
 from models import WebAppUser, EventCreate, EventResponse, EventUpdate, EventUpdateResponse, ErrorResponse, ErrorDetail
 from db import create_or_update_user, create_event, get_active_user_events, get_archived_user_events, \
     get_event_details_db, delete_event_db, update_event_data, validate_event_update_permissions, submit_votes_db, \
-    finalized_event_db, get_event_by_public_id, restore_event_db
+    finalized_event_db, get_event_by_public_id, restore_event_db, update_event_location_on_finalize
 
 from db import Database
 from bot import telegram_bot, verify_webapp_init_data, BOT_TOKEN, WEBHOOK_SECRET, WEBHOOK_PATH
@@ -209,7 +216,7 @@ async def get_event_details(event_public_id: str, conn: asyncpg.Connection = Dep
     return event_details
 
 
-@app.post("/api/events/{event_id}/delete")
+@app.delete("/api/events/{event_id}/delete")
 async def delete_event(event_id: int, conn: asyncpg.Connection = Depends(get_db),
                        telegram_data=Depends(verify_telegram_webapp)):
     user_id = telegram_data.user.id
@@ -380,10 +387,13 @@ async def finalized_poll(
         raise HTTPException(status_code=422, detail="Invalid JSON format")
 
     slot_id = data.get("slot_id")
+    location = data.get("location")
     if not slot_id:
         raise HTTPException(status_code=400, detail="No slot selected")
 
     try:
+        if location:
+            await update_event_location_on_finalize(conn, event_id, location)
         result = await finalized_event_db(conn, event_id, user_id, int(slot_id))
     except asyncpg.PostgresError:
         raise HTTPException(status_code=500, detail="Database error")
@@ -424,6 +434,167 @@ async def restore_event(
         print(f"[restore_event] notify failed: {e}")
 
     return result
+
+
+class ICSRequest(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    startDate: str  # ISO string
+    endDate: Optional[str] = None
+    location: Optional[str] = ""
+    timezone: Optional[str] = "UTC"
+
+
+def escape_ics_text(text: str) -> str:
+    """Escape special characters for ICS format"""
+    if not text:
+        return ""
+    return (text.replace("\\", "\\\\")
+            .replace(",", "\\,")
+            .replace(";", "\\;")
+            .replace("\n", "\\n")
+            .replace("\r", ""))
+
+
+def format_ics_date(dt: datetime) -> str:
+    """Format datetime for ICS (YYYYMMDDTHHMMSSZ)"""
+    return dt.strftime("%Y%m%dT%H%M%SZ")
+
+
+def generate_ics_content(request: ICSRequest) -> str:
+    """Generate ICS file content"""
+    try:
+        # Parse start date
+        start_dt = datetime.fromisoformat(request.startDate.replace('Z', '+00:00'))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+
+        # Parse end date or default to 1 hour later
+        if request.endDate:
+            end_dt = datetime.fromisoformat(request.endDate.replace('Z', '+00:00'))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        else:
+            end_dt = start_dt.replace(hour=start_dt.hour + 1)
+
+        # Convert to UTC for ICS
+        start_utc = start_dt.astimezone(timezone.utc)
+        end_utc = end_dt.astimezone(timezone.utc)
+
+        # Generate unique ID
+        event_uid = f"{uuid.uuid4()}@telegram-event.com"
+        timestamp = format_ics_date(datetime.now(timezone.utc))
+
+        # Build ICS content
+        ics_content = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Telegram Event//Event//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:{event_uid}
+DTSTAMP:{timestamp}
+DTSTART:{format_ics_date(start_utc)}
+DTEND:{format_ics_date(end_utc)}
+SUMMARY:{escape_ics_text(request.title)}
+DESCRIPTION:{escape_ics_text(request.description)}
+LOCATION:{escape_ics_text(request.location)}
+STATUS:CONFIRMED
+SEQUENCE:0
+BEGIN:VALARM
+TRIGGER:-PT15M
+ACTION:DISPLAY
+DESCRIPTION:Reminder
+END:VALARM
+END:VEVENT
+END:VCALENDAR"""
+
+        return ics_content.replace('\n', '\r\n')
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error parsing dates: {str(e)}")
+
+
+@app.post("/api/generate-ics")
+async def generate_ics(request: ICSRequest):
+    print(1)
+    """Generate ICS file and return download URL"""
+    try:
+        # Generate ICS content
+        ics_content = generate_ics_content(request)
+
+        # Create temp directory if it doesn't exist
+        temp_dir = Path("temp/ics")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate unique filename
+        filename = f"event_{uuid.uuid4().hex[:8]}.ics"
+        filepath = temp_dir / filename
+
+        # Write ICS file
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(ics_content)
+
+        # Return download URL
+        download_url = f"/download/ics/{filename}"
+
+        return {
+            "success": True,
+            "downloadUrl": download_url,
+            "filename": filename
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating ICS file: {str(e)}")
+
+
+@app.get("/download/ics/{filename}")
+async def download_ics(filename: str):
+    """Download ICS file"""
+    # Validate filename to prevent path traversal
+    if not filename.endswith('.ics') or '/' in filename or '\\' in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    filepath = Path("temp/ics") / filename
+
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=filepath,
+        media_type='text/calendar',
+        filename=filename,
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
+
+
+# Optional: Cleanup old files endpoint
+@app.delete("/api/cleanup-ics")
+async def cleanup_old_ics_files():
+    """Clean up ICS files older than 1 hour"""
+    try:
+        temp_dir = Path("temp/ics")
+        if not temp_dir.exists():
+            return {"cleaned": 0}
+
+        current_time = datetime.now().timestamp()
+        cleaned_count = 0
+
+        for file_path in temp_dir.glob("*.ics"):
+            # Check if file is older than 1 hour
+            if current_time - file_path.stat().st_mtime > 3600:
+                file_path.unlink()
+                cleaned_count += 1
+
+        return {"cleaned": cleaned_count}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during cleanup: {str(e)}")
 
 
 if __name__ == "__main__":
