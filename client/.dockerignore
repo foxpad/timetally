@@ -1,0 +1,18 @@
+# Файлы для исключения из Docker образа клиента
+
+node_modules
+npm-debug.log*
+.npm
+.eslintcache
+.git
+.gitignore
+README.md
+.env
+.env.local
+.env.*.local
+dist
+.vscode
+.idea
+*.log
+.DS_Store
+Thumbs.db

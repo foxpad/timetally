@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: timetally
+      POSTGRES_USER: timetally_user
+      POSTGRES_PASSWORD: timetally_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timetally_user -d timetally"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Серверная часть (FastAPI)
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - WEBHOOK_PATH=${WEBHOOK_PATH}
+      - DB_URL=postgresql://timetally_user:timetally_password@postgres:5432/timetally
+      - CLIENT_URL=${CLIENT_URL}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app
+      - server_temp:/app/temp
+    restart: unless-stopped
+
+  # Клиентская часть (React/Vite)
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_DEFAULT_URL=${VITE_DEFAULT_URL:-http://localhost:8000}
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  server_temp:

@@ -1,0 +1,64 @@
+# Конфигурация для разработки
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: timetally_dev
+      POSTGRES_USER: timetally_user
+      POSTGRES_PASSWORD: timetally_password
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timetally_user -d timetally_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Серверная часть для разработки
+  server-dev:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - WEBHOOK_URL=http://localhost:8000
+      - WEBHOOK_PATH=/webhook
+      - DB_URL=postgresql://timetally_user:timetally_password@postgres:5432/timetally_dev
+      - CLIENT_URL=http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app
+      - server_dev_temp:/app/temp
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  # Клиентская часть для разработки
+  client-dev:
+    image: node:18-alpine
+    working_dir: /app
+    environment:
+      - VITE_DEFAULT_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./client:/app
+      - client_node_modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - server-dev
+    restart: unless-stopped
+
+volumes:
+  postgres_dev_data:
+  server_dev_temp:
+  client_node_modules:
