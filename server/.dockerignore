@@ -8,7 +8,7 @@ __pycache__
 .git
 .gitignore
 README.md
-.env
+env_data.txt
 .env.*
 .pytest_cache
 .coverage

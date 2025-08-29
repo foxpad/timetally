@@ -13,7 +13,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: true, // или '0.0.0.0'
-    allowedHosts: ['72589fa837d4.ngrok-free.app'], // ← сюда добавляешь свой домен
+    allowedHosts: ['59f74413ea67.ngrok-free.app'], // ← сюда добавляешь свой домен
   },
   optimizeDeps: {
     include: ['framer-motion'],

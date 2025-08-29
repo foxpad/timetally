@@ -61,7 +61,7 @@ async def verify_telegram_webapp(request: Request):
 
 
 async def get_user_from_telegram_data(parsed_data) -> WebAppUser:
-    if not parsed_data.user.is_premium:
+    if getattr(parsed_data.user, 'is_premim', None):
         is_premium = False
     else:
         is_premium = True
@@ -97,7 +97,7 @@ app = FastAPI(lifespan=app_lifespan)
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://59f74413ea67.ngrok-free.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

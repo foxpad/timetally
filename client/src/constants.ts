@@ -75,7 +75,7 @@ export const translations = {
     'templateButton': 'Template',
 
     'eventLocation': 'Location',
-    'eventLocationPlaceholder': 'Address, Zoom/Meet link, or other location',
+    'eventLocationPlaceholder': 'Location or link (Optional)',
     'addLocationOnFinalize': 'Add meeting location',
     'locationAdded': 'Location added',
     'addToCalendarButton': 'Add to Calendar',
@@ -155,7 +155,7 @@ export const translations = {
     'templateButton': 'Шаблон',
 
     'eventLocation': 'Место встречи',
-    'eventLocationPlaceholder': 'Адрес, ссылка на Zoom/Meet или другая локация',
+    'eventLocationPlaceholder': 'Локация или ссылка (необязательно)',
     'addLocationOnFinalize': 'Добавить место встречи',
     'locationAdded': 'Место встречи добавлено',
     'addToCalendarButton': 'Добавить в календарь',

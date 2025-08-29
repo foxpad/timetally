@@ -13,7 +13,7 @@ async function request(endpoint: string, method: string = "GET", data?: any) {
         headers: {
             Authorization: tg.initData,
             ContentType: "application/json",
-            Acces: "application/json",
+            Accept: "application/json",
             ...defaultHeaders,
         },
         body: typeof data === 'string' ? data : JSON.stringify(data)

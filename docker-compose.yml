@@ -46,10 +46,10 @@ services:
     build:
       context: ./client
       dockerfile: Dockerfile
+      args:
+        VITE_DEFAULT_URL: /api
     ports:
       - "3000:80"
-    environment:
-      - VITE_DEFAULT_URL=${VITE_DEFAULT_URL:-http://localhost:8000}
     depends_on:
       - server
     restart: unless-stopped

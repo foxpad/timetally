@@ -437,7 +437,7 @@ export default function CreateEvent() {
     return sortedSlots;
   }, [timeSlots]);
 
-  const isFormValid = eventTitle.trim() !== '' && totalSlotsCount > 1;
+  const isFormValid = eventTitle.trim() !== '' && totalSlotsCount >= 1;
 
   const handleSubmit = async () => {
     if (isFormValid) {
@@ -506,7 +506,7 @@ export default function CreateEvent() {
         console.error('Error creating events:', error);
       }
     } else {
-      if (totalSlotsCount <= 0) {
+      if (totalSlotsCount < 1) {
         if (eventTitle.trim() === '') {
           await showAlert(t('formNotTitleDate'));
         } else {
