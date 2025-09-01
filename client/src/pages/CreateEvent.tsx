@@ -416,7 +416,7 @@ export default function CreateEvent() {
 
   const navigate = useNavigate();
   const onBackButton = () => {
-    navigate('/');
+    navigate('/events');
   };
 
   // Создаем версию timeSlots для отображения (с сортировкой)

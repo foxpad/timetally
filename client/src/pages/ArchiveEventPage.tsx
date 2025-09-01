@@ -17,7 +17,7 @@ export default function ArchivedEventPage() {
   const { t } = useLanguage();
   
   const onBackButton = () => {
-    navigate('/');
+    navigate('/events');
   };
 
   useEffect(() => {

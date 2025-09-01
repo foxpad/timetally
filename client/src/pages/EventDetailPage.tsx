@@ -44,7 +44,7 @@ export default function EventDetail() {
     }, [eventDetail, loading]);
 
     const onBackButton = () => {
-        navigate('/');
+        navigate('/events');
     };
 
     const [selectedSlots, setSelectedSlots] = useState<number[]>(
@@ -281,7 +281,7 @@ export default function EventDetail() {
             const response = await useDeleteEvent(eventDetail.event.id);
             if (response) {
                 await showAlert(t('eventDeletedSuccessfully'));
-                navigate('/');
+                navigate('/events');
             } else {
                 await showAlert(t('errorDeletingEvent'));
             };

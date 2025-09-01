@@ -14,7 +14,7 @@ export default function App() {
       <BrowserRouter>
         <StartParamRouter />
         <Routes>
-          <Route path="/" element={<EventsPage />} />
+          <Route path="/events" element={<EventsPage />} />
           <Route path="/create" element={<CreateEvent />} />
           <Route path="/event/:id" element={<EventDetail />} />
           <Route path="/event/public/:publicId" element={<EventDetail />} />
